@@ -1,3 +1,5 @@
+from datetime import datetime
+import json
 from pyexpat import features
 import copy
 import math
@@ -9,7 +11,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchmetrics
 
+from torch import Tensor
+
 from transformers import CLIPModel, AutoConfig, AutoModel
+
 
 class CLIPClassifier(pl.LightningModule):
 
@@ -92,22 +97,35 @@ class CLIPClassifier(pl.LightningModule):
 
             self.image_map = nn.Sequential(*image_map_layers)
             self.text_map = nn.Sequential(*text_map_layers)
-        
-        if args.fusion in ['align', 'align_shuffle']:
+
+            # TODO: 权重和=1，F.normalize函数，拼接
+            # TODO: 引入Prompt
+            # for weighted
+            # shape = (batch_size, 1)
+            self.image_feature_w = nn.Parameter(torch.randn(args.batch_size, 1))
+            self.text_feature_w = nn.Parameter(torch.randn(args.batch_size, 1))
+
+
+        fusion = args.fusion
+        # TODO: 目前设计weighted模式下pre_output_input_dim与非weighted下一致，请确认是否正确
+        if fusion.startswith('weighted'):
+            fusion = fusion.replace('weighted_', '')
+
+        if fusion in ['align', 'align_shuffle']:
             pre_output_input_dim = self.map_dim
-        elif args.fusion == 'concat':
+        elif fusion == 'concat':
             pre_output_input_dim = self.map_dim*2
-        elif args.fusion.startswith('cross'):
+        elif fusion.startswith('cross'):
             pre_output_input_dim = self.map_dim**2
-        elif args.fusion == 'align_concat':
+        elif fusion == 'align_concat':
             pre_output_input_dim = self.map_dim*3
-        elif args.fusion == 'attention_m':
+        elif fusion == 'attention_m':
             self.gen_query = nn.Linear(self.map_dim, self.map_dim//4) 
             self.gen_key = nn.Linear(self.map_dim, self.map_dim//4) 
             self.soft = nn.Softmax(dim=1)
             pre_output_input_dim = self.map_dim*2
         else: #看看args.fusion是什么
-            print("args.fusion is ",args.fusion)
+            print("args.fusion is ", fusion)
         pre_output_layers = [nn.Dropout(p=args.drop_probs[1])]
         output_input_dim = pre_output_input_dim
         if self.num_pre_output_layers >= 1: # first pre-output layer
@@ -329,7 +347,30 @@ class CLIPClassifier(pl.LightningModule):
                 del mask
             features = features.reshape(features.shape[0], -1)  # [batch_size, d*d]
         elif self.fusion == 'align_concat':
-                features = torch.cat([torch.mul(image_features, text_features), image_features, text_features], dim=1)  # [batch_size, 3*d]
+            features = torch.cat([torch.mul(image_features, text_features), image_features, text_features], dim=1)  # [batch_size, 3*d]
+        elif self.fusion.startswith('weighted'):
+            # tensor * 列向量，结果是每行乘以列向量对应行的值
+            weighted_image_features = image_features * self.image_feature_w
+            weighted_text_features = text_features * self.text_feature_w
+
+            # normalize
+            weighted_image_features = F.normalize(weighted_image_features, p=2, dim=1)
+            weighted_text_features = F.normalize(weighted_text_features, p=2, dim=1)
+
+            if self.fusion in ['weighted_align', 'weighted_align_shuffle']:
+                features = torch.mul(weighted_image_features, weighted_text_features)  # [batch_size, d]
+            elif self.fusion == 'weighted_concat':
+                features = torch.cat([weighted_image_features, weighted_text_features], dim=1)  # [batch_size, 2*d]
+            elif self.fusion.startswith('weighted_cross'):
+                features = torch.bmm(weighted_image_features.unsqueeze(2), weighted_text_features.unsqueeze(1))  # [16, d, d]
+                if self.fusion == 'weighted_cross_nd':
+                    mask = torch.eye(self.map_dim).repeat(features.shape[0], 1, 1).bool()
+                    features[mask] = torch.zeros(features.shape[0] * self.map_dim, device=features.device)
+                    del mask
+                features = features.reshape(features.shape[0], -1)  # [batch_size, d*d]
+            else:
+                raise ValueError()
+
         elif self.fusion == 'attention_m':
             q1 = F.relu(self.gen_query(image_features))
             k1 = F.relu(self.gen_key(image_features))

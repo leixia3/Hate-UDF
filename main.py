@@ -44,7 +44,7 @@ def get_arg_parser():
     parser.add_argument('--use_pretrained_map', default=False, type=str2bool)
     parser.add_argument('--num_mapping_layers', default=1, type=int)
     parser.add_argument('--map_dim', default=768, type=int)
-    parser.add_argument('--fusion', default='clip', choices=['align', 'align_shuffle', 'concat', 'cross', 'cross_nd', 'align_concat', 'attention_m'])
+    parser.add_argument('--fusion', default='clip', choices=['align', 'align_shuffle', 'concat', 'cross', 'cross_nd', 'align_concat', 'weighted_align', 'weighted_align_shuffle', 'weighted_concat', 'weighted_cross', 'weighted_cross_nd', 'attention_m'])
     parser.add_argument('--num_pre_output_layers', default=1, type=int)
     parser.add_argument('--drop_probs', type=float, nargs=3, default=[0.1, 0.4, 0.2], help="Set drop probabilities for map, fusion, pre_output")
     parser.add_argument('--image_encoder', type=str, default='clip')
@@ -110,14 +110,14 @@ def main(args):
     else:
         multilingual_tokenizer_path = 'none'
     collator = CustomCollator(args, dataset_train.fine_grained_labels, multilingual_tokenizer_path=multilingual_tokenizer_path)
-    dataloader_train = DataLoader(dataset_train, batch_size=args.batch_size, shuffle=True, num_workers=num_cpus, collate_fn=collator)
-    dataloader_val = DataLoader(dataset_val, batch_size=args.batch_size, num_workers=num_cpus, collate_fn=collator)
+    dataloader_train = DataLoader(dataset_train, batch_size=args.batch_size, shuffle=True, num_workers=num_cpus, collate_fn=collator, drop_last=True)
+    dataloader_val = DataLoader(dataset_val, batch_size=args.batch_size, num_workers=num_cpus, collate_fn=collator, drop_last=True)
     if args.dataset in ['original', 'masked', 'inpainted']:
-        dataloader_test = DataLoader(dataset_test, batch_size=args.batch_size, num_workers=num_cpus, collate_fn=collator)
-        dataloader_val_unseen = DataLoader(dataset_val_unseen, batch_size=args.batch_size, num_workers=num_cpus, collate_fn=collator)
-        dataloader_test_unseen = DataLoader(dataset_test_unseen, batch_size=args.batch_size, num_workers=num_cpus, collate_fn=collator)
+        dataloader_test = DataLoader(dataset_test, batch_size=args.batch_size, num_workers=num_cpus, collate_fn=collator, drop_last=True)
+        dataloader_val_unseen = DataLoader(dataset_val_unseen, batch_size=args.batch_size, num_workers=num_cpus, collate_fn=collator, drop_last=True)
+        dataloader_test_unseen = DataLoader(dataset_test_unseen, batch_size=args.batch_size, num_workers=num_cpus, collate_fn=collator, drop_last=True)
     elif args.dataset == 'prop':
-        dataloader_test = DataLoader(dataset_test, batch_size=args.batch_size, num_workers=num_cpus, collate_fn=collator)
+        dataloader_test = DataLoader(dataset_test, batch_size=args.batch_size, num_workers=num_cpus, collate_fn=collator, drop_last=True)
     
     # create model
     seed_everything(42, workers=True)
