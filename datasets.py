@@ -1,5 +1,5 @@
 import os
-
+import pickle as pkl
 import pandas as pd
 import torch
 from PIL import Image
@@ -9,14 +9,15 @@ from transformers import CLIPTokenizer, CLIPProcessor, AutoTokenizer
 
 
 class HatefulMemesDataset(Dataset):
-    def __init__(self, root_folder, image_folder, split='train', labels='original', image_size=224):
+    def __init__(self, root_folder, image_folder, info_file, split='train', labels='original', image_size=224):
         super(HatefulMemesDataset, self).__init__()
         self.root_folder = root_folder
         self.image_folder = image_folder
         self.split = split
         self.labels = labels
         self.image_size = image_size
-        self.info_file = os.path.join(root_folder, 'hateful_memes_expanded.csv')
+        # self.info_file = os.path.join(root_folder, 'hateful_memes_expanded.csv')
+        self.info_file = os.path.join(root_folder, info_file)
         self.df = pd.read_csv(self.info_file)
         self.df = self.df[self.df['split']==self.split].reset_index(drop=True)
         float_cols = self.df.select_dtypes(float).columns
@@ -51,6 +52,8 @@ class HatefulMemesDataset(Dataset):
         item['idx_image'] = row['pseudo_img_idx']
         item['idx_text'] = row['pseudo_text_idx']
         item['caption'] = row['caption']
+        # 引入Pro-Cap
+        item['pro_cap'] = row['pro_cap']
 
         if self.labels.startswith('fine_grained'):
             for label in self.fine_grained_labels:
@@ -132,11 +135,18 @@ class CustomCollator(object):
 
     def __call__(self, batch):
         pixel_values = self.image_processor(images=[item['image'] for item in batch], return_tensors="pt")['pixel_values']
+        # 默认是None
         if self.args.caption_mode == 'replace_text':
             text_output = self.text_processor([item['caption'] for item in batch], padding=True, return_tensors="pt", truncation=True)
         elif self.args.caption_mode == 'concat_with_text':
             text_output = self.text_processor([item['text'] + ' [SEP] ' + item['caption'] for item in batch], padding=True, return_tensors="pt", truncation=True)
         else:
+            '''
+                text_output 将是一个字典，其中包含了处理后的文本数据。通常，这个字典包含以下键：
+                    'input_ids': 包含文本序列的 token IDs，是一个 PyTorch Tensor。
+                    'attention_mask': 包含 attention mask，指示哪些 token 需要被注意，也是一个 PyTorch Tensor。
+                    'token_type_ids': 包含 token 的类型 IDs，对于 CLIP 模型来说可能没有实际用途，也是一个 PyTorch Tensor。
+            '''
             text_output = self.text_processor([item['text'] for item in batch], padding=True, return_tensors="pt", truncation=True)
         
         if self.args.dataset in ['original', 'masked', 'inpainted', 'tamil']:
@@ -147,11 +157,22 @@ class CustomCollator(object):
             idx_images = torch.LongTensor([item['idx_image'] for item in batch])
             idx_texts = torch.LongTensor([item['idx_text'] for item in batch])
 
+        # 处理Pro-Cap
+        if self.args.with_pro_cap:
+            pro_cap_output = self.text_processor([item['pro_cap'] for item in batch], padding=True, return_tensors="pt",
+                                              truncation=True)
+
+
         batch_new = {}
         batch_new['pixel_values'] = pixel_values,
         batch_new['input_ids'] = text_output['input_ids']
         batch_new['attention_mask'] = text_output['attention_mask']
         if self.args.dataset in ['original', 'masked', 'inpainted', 'tamil']:
+            # 将Pro-Cap写入batch_new
+            if self.args.with_pro_cap:
+                batch_new['input_ids_pro_cap'] = pro_cap_output['input_ids']
+                batch_new['attention_mask_pro_cap'] = pro_cap_output['attention_mask']
+
             batch_new['input_ids_caption'] = caption_output['input_ids']
             batch_new['attention_mask_caption'] = caption_output['attention_mask']
             batch_new['labels'] = labels
@@ -171,8 +192,17 @@ class CustomCollator(object):
         return batch_new
 
 
+def load_pkl(path):
+    with open(path, 'rb') as f:
+        return pkl.load(f)
+
 
 def load_dataset(args, split):
+
+    info_file = {
+        True: 'modified_without_val_hateful_memes_expanded.csv',
+        False: 'modified_hateful_memes_expanded.csv'
+    }[args.without_val]
 
     if args.dataset == 'original':
         image_folder = 'data/hateful_memes/img'
@@ -186,6 +216,6 @@ def load_dataset(args, split):
     elif args.dataset == 'prop':
         dataset = PropMemesDataset(root_folder='data/propaganda-techniques-in-memes/data/datasets/propaganda/defaults', split=split, image_size=args.image_size)
     else:
-        dataset = HatefulMemesDataset(root_folder='data/hateful_memes', image_folder=image_folder, split=split, labels=args.labels, image_size=args.image_size)
+        dataset = HatefulMemesDataset(root_folder='data/hateful_memes', image_folder=image_folder, info_file=info_file,split=split, labels=args.labels, image_size=args.image_size)
 
     return dataset

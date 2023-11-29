@@ -17,17 +17,56 @@ from transformers import CLIPModel, AutoConfig, AutoModel
 
 
 class CLIPClassifier(pl.LightningModule):
+    # 方法
+    def weight_taining(self, image_features, text_features):
+        # TODO: 变更单模态预测方式
+        image_features_pre_output = self.pre_output_image(image_features)
+        image_logits = self.output_image(image_features_pre_output).squeeze(dim=1)  # [batch_size, 1]
+        pred_image_weights = torch.sigmoid(image_logits)  # shape = (batch_size)
+        pred_image_weights = pred_image_weights.unsqueeze(1)  # shape = (batch_size, 1)
+
+        text_features_pre_output = self.pre_output_text(text_features)
+        text_logits = self.output_text(text_features_pre_output).squeeze(dim=1)  # [batch_size, 1]
+        pred_text_weights = torch.sigmoid(text_logits)  # shape = (batch_size)
+        pred_text_weights = pred_text_weights.unsqueeze(1)  # shape = (batch_size, 1)
+
+        # print(f'{pred_image_weights=}')
+        # print(f'{pred_text_weights=}')
+        #
+        # pred_image_weights=tensor([0.4946, 0.4941, 0.5063, 0.5051, 0.5041, 0.5070, 0.4964, 0.5029, 0.5066,
+        #         0.4921, 0.4919, 0.4998, 0.5074, 0.4930, 0.4808, 0.4933],
+        #        device='cuda:0')
+        # pred_text_weights=tensor([0.4947, 0.4956, 0.4896, 0.4918, 0.4886, 0.5016, 0.4965, 0.4936, 0.4860,
+        #         0.4882, 0.4887, 0.4935, 0.4929, 0.4871, 0.4864, 0.4987],
+        #        device='cuda:0')
+
+        # 归一化
+        # 首先拼接
+        tmp_tensor = torch.cat((pred_image_weights, pred_text_weights), 1)
+        # # 然后调用F.softmax函数，按列（一次两个值）做标准化，使得一个batch_size下image_feature_w和text_feature权重和=1
+        softmax_tmp_tensor = F.softmax(tmp_tensor, dim=1)
+        # # 最后分离新tensor并依次赋值给image_feature_w和text_feature_w
+        tensor_chunked = torch.chunk(softmax_tmp_tensor.t(), chunks=2, dim=0)
+        image_feature_w = tensor_chunked[0].t()
+        text_feature_w = tensor_chunked[1].t()
+
+        # print(f'{image_feature_w=}, {text_feature_w=}')
+        # with open('log_weights.json', 'at') as file:
+        #     file.write(json.dumps({
+        #         'image_feature_w': image_feature_w.squeeze().tolist(),
+        #         'text_feature_w': text_feature_w.squeeze().tolist()
+        #     }))
+        return image_feature_w, text_feature_w
 
     def __init__(self, args, fine_grained_labels, compute_fine_grained_metrics):
         super().__init__()
-
-
+        self.args = args
         self.caption_mode = args.caption_mode
         self.use_pretrained_map = args.use_pretrained_map
-        self.num_mapping_layers = args.num_mapping_layers 
-        self.map_dim = args.map_dim  
+        self.num_mapping_layers = args.num_mapping_layers
+        self.map_dim = args.map_dim
         self.fusion = args.fusion
-        self.num_pre_output_layers = args.num_pre_output_layers 
+        self.num_pre_output_layers = args.num_pre_output_layers
         self.lr = args.lr
         self.weight_decay = args.weight_decay
         self.weight_image_loss = args.weight_image_loss
@@ -62,9 +101,9 @@ class CLIPClassifier(pl.LightningModule):
         # self.clip = CLIPModel.from_pretrained(args.clip_pretrained_model)
         if args.local_pretrained_weights != 'none':
             state_dict = torch.load(args.local_pretrained_weights)['state_dict']
-            state_dict = {k[5:]:v for k,v in state_dict.items() if k.startswith('clip')}
+            state_dict = {k[5:]: v for k, v in state_dict.items() if k.startswith('clip')}
             self.clip.load_state_dict(state_dict)
-        if args.image_encoder == 'clip': 
+        if args.image_encoder == 'clip':
             self.image_encoder = copy.deepcopy(self.clip.vision_model)
         else:
             raise ValueError()
@@ -75,36 +114,38 @@ class CLIPClassifier(pl.LightningModule):
             self.text_encoder = AutoModel.from_pretrained(args.text_encoder, config=config)
         else:
             raise ValueError()
-        
+
         if self.use_pretrained_map:
             self.image_map = nn.Sequential(
                 copy.deepcopy(self.clip.visual_projection),
                 nn.ReLU(),
                 nn.Linear(self.clip.projection_dim, self.map_dim)
-                )
+            )
             self.text_map = nn.Sequential(
                 copy.deepcopy(self.clip.text_projection),
                 nn.ReLU(),
                 nn.Linear(self.clip.projection_dim, self.map_dim)
-                )
+            )
 
         else:
-            image_map_layers = [nn.Linear(self.image_encoder.config.hidden_size, self.map_dim), nn.Dropout(p=args.drop_probs[0])]
-            text_map_layers = [nn.Linear(self.text_encoder.config.hidden_size, self.map_dim), nn.Dropout(p=args.drop_probs[0])]
+            image_map_layers = [nn.Linear(self.image_encoder.config.hidden_size, self.map_dim),
+                                nn.Dropout(p=args.drop_probs[0])]
+            text_map_layers = [nn.Linear(self.text_encoder.config.hidden_size, self.map_dim),
+                               nn.Dropout(p=args.drop_probs[0])]
+            # 引入Pro-Cap映射层
+            pro_cap_map_layers = [nn.Linear(self.text_encoder.config.hidden_size, self.map_dim),
+                               nn.Dropout(p=args.drop_probs[0])]
             for _ in range(1, self.num_mapping_layers):
-                image_map_layers.extend([nn.ReLU(), nn.Linear(self.map_dim, self.map_dim), nn.Dropout(p=args.drop_probs[0])])
-                text_map_layers.extend([nn.ReLU(), nn.Linear(self.map_dim, self.map_dim), nn.Dropout(p=args.drop_probs[0])])
+                image_map_layers.extend(
+                    [nn.ReLU(), nn.Linear(self.map_dim, self.map_dim), nn.Dropout(p=args.drop_probs[0])])
+                text_map_layers.extend(
+                    [nn.ReLU(), nn.Linear(self.map_dim, self.map_dim), nn.Dropout(p=args.drop_probs[0])])
+                pro_cap_map_layers.extend(
+                    [nn.ReLU(), nn.Linear(self.map_dim, self.map_dim), nn.Dropout(p=args.drop_probs[0])])
 
             self.image_map = nn.Sequential(*image_map_layers)
             self.text_map = nn.Sequential(*text_map_layers)
-
-            # TODO: 权重和=1，F.normalize函数，拼接
-            # TODO: 引入Prompt
-            # for weighted
-            # shape = (batch_size, 1)
-            self.image_feature_w = nn.Parameter(torch.randn(args.batch_size, 1))
-            self.text_feature_w = nn.Parameter(torch.randn(args.batch_size, 1))
-
+            self.pro_cap_map = nn.Sequential(*pro_cap_map_layers)
 
         fusion = args.fusion
         # TODO: 目前设计weighted模式下pre_output_input_dim与非weighted下一致，请确认是否正确
@@ -112,27 +153,35 @@ class CLIPClassifier(pl.LightningModule):
             fusion = fusion.replace('weighted_', '')
 
         if fusion in ['align', 'align_shuffle']:
-            pre_output_input_dim = self.map_dim
+            if self.args.with_pro_cap:
+                pre_output_input_dim = self.map_dim
+            else:
+                pre_output_input_dim = self.map_dim
         elif fusion == 'concat':
-            pre_output_input_dim = self.map_dim*2
+            if self.args.with_pro_cap:
+                pre_output_input_dim = self.map_dim * 3
+            else:
+                pre_output_input_dim = self.map_dim * 2
         elif fusion.startswith('cross'):
-            pre_output_input_dim = self.map_dim**2
+            pre_output_input_dim = self.map_dim ** 2
         elif fusion == 'align_concat':
-            pre_output_input_dim = self.map_dim*3
+            pre_output_input_dim = self.map_dim * 3
         elif fusion == 'attention_m':
-            self.gen_query = nn.Linear(self.map_dim, self.map_dim//4) 
-            self.gen_key = nn.Linear(self.map_dim, self.map_dim//4) 
+            self.gen_query = nn.Linear(self.map_dim, self.map_dim // 4)
+            self.gen_key = nn.Linear(self.map_dim, self.map_dim // 4)
             self.soft = nn.Softmax(dim=1)
-            pre_output_input_dim = self.map_dim*2
-        else: #看看args.fusion是什么
+            pre_output_input_dim = self.map_dim * 2
+        else:  # 看看args.fusion是什么
             print("args.fusion is ", fusion)
         pre_output_layers = [nn.Dropout(p=args.drop_probs[1])]
         output_input_dim = pre_output_input_dim
-        if self.num_pre_output_layers >= 1: # first pre-output layer
-            pre_output_layers.extend([nn.Linear(pre_output_input_dim, self.map_dim), nn.ReLU(), nn.Dropout(p=args.drop_probs[2])])
+        if self.num_pre_output_layers >= 1:  # first pre-output layer
+            pre_output_layers.extend(
+                [nn.Linear(pre_output_input_dim, self.map_dim), nn.ReLU(), nn.Dropout(p=args.drop_probs[2])])
             output_input_dim = self.map_dim
-        for _ in range(1, self.num_pre_output_layers): # next pre-output layers
-            pre_output_layers.extend([nn.Linear(self.map_dim, self.map_dim), nn.ReLU(), nn.Dropout(p=args.drop_probs[2])])
+        for _ in range(1, self.num_pre_output_layers):  # next pre-output layers
+            pre_output_layers.extend(
+                [nn.Linear(self.map_dim, self.map_dim), nn.ReLU(), nn.Dropout(p=args.drop_probs[2])])
 
         self.pre_output = nn.Sequential(*pre_output_layers)
         if self.dataset in ['original', 'masked', 'inpainted', 'tamil']:
@@ -140,24 +189,40 @@ class CLIPClassifier(pl.LightningModule):
         elif self.dataset == 'prop':
             self.output = nn.Linear(output_input_dim, 22)
 
-        if self.weight_image_loss > 0:
-            pre_output_layers = [nn.Dropout(p=args.drop_probs[1])]
-            for _ in range(self.num_pre_output_layers): # next pre-output layers
-                pre_output_layers.extend([nn.Linear(self.map_dim, self.map_dim), nn.ReLU(), nn.Dropout(p=args.drop_probs[2])])
-            self.pre_output_image = nn.Sequential(*pre_output_layers)
-            if self.dataset in ['original', 'masked', 'inpainted', 'tamil']:
-                self.output_image = nn.Linear(output_input_dim, 1)
-            elif self.dataset == 'prop':
-                self.output_image = nn.Linear(output_input_dim, 22)
-        if self.weight_text_loss > 0:
-            pre_output_layers = [nn.Dropout(p=args.drop_probs[1])]
-            for _ in range(self.num_pre_output_layers): # next pre-output layers
-                pre_output_layers.extend([nn.Linear(self.map_dim, self.map_dim), nn.ReLU(), nn.Dropout(p=args.drop_probs[2])])
-            self.pre_output_text = nn.Sequential(*pre_output_layers)
-            if self.dataset in ['original', 'masked', 'inpainted', 'tamil']:
-                self.output_text = nn.Linear(output_input_dim, 1)
-            elif self.dataset == 'prop':
-                self.output_text = nn.Linear(output_input_dim, 22)
+        image_pre_output_layers = [nn.Dropout(p=args.drop_probs[1])]
+        text_pre_output_layers = [nn.Dropout(p=args.drop_probs[1])]
+        for _ in range(self.num_pre_output_layers):  # next pre-output layers
+            image_pre_output_layers.extend(
+                [nn.Linear(self.map_dim, self.map_dim), nn.ReLU(), nn.Dropout(p=args.drop_probs[2])])
+            text_pre_output_layers.extend(
+                [nn.Linear(self.map_dim, self.map_dim), nn.ReLU(), nn.Dropout(p=args.drop_probs[2])])
+        self.pre_output_image = nn.Sequential(*image_pre_output_layers)
+        self.pre_output_text = nn.Sequential(*text_pre_output_layers)
+        if self.dataset in ['original', 'masked', 'inpainted', 'tamil']:
+            self.output_image = nn.Linear(output_input_dim, 1)
+            self.output_text = nn.Linear(output_input_dim, 1)
+        elif self.dataset == 'prop':
+            self.output_image = nn.Linear(output_input_dim, 22)
+            self.output_text = nn.Linear(output_input_dim, 22)
+
+        # if self.weight_image_loss > 0:
+        #     pre_output_layers = [nn.Dropout(p=args.drop_probs[1])]
+        #     for _ in range(self.num_pre_output_layers): # next pre-output layers
+        #         pre_output_layers.extend([nn.Linear(self.map_dim, self.map_dim), nn.ReLU(), nn.Dropout(p=args.drop_probs[2])])
+        #     self.pre_output_image = nn.Sequential(*pre_output_layers)
+        #     if self.dataset in ['original', 'masked', 'inpainted', 'tamil']:
+        #         self.output_image = nn.Linear(output_input_dim, 1)
+        #     elif self.dataset == 'prop':
+        #         self.output_image = nn.Linear(output_input_dim, 22)
+        # if self.weight_text_loss > 0:
+        #     pre_output_layers = [nn.Dropout(p=args.drop_probs[1])]
+        #     for _ in range(self.num_pre_output_layers): # next pre-output layers
+        #         pre_output_layers.extend([nn.Linear(self.map_dim, self.map_dim), nn.ReLU(), nn.Dropout(p=args.drop_probs[2])])
+        #     self.pre_output_text = nn.Sequential(*pre_output_layers)
+        #     if self.dataset in ['original', 'masked', 'inpainted', 'tamil']:
+        #         self.output_text = nn.Linear(output_input_dim, 1)
+        #     elif self.dataset == 'prop':
+        #         self.output_text = nn.Linear(output_input_dim, 22)
 
         if self.fine_grained_labels:
             if self.dataset in ['original', 'masked', 'inpainted']:
@@ -175,8 +240,11 @@ class CLIPClassifier(pl.LightningModule):
                 self.output_attack6 = nn.Linear(output_input_dim, 1)
                 self.output_attack7 = nn.Linear(output_input_dim, 1)
                 self.output_attack8 = nn.Linear(output_input_dim, 1)
-                self.outputs_fine_grained = [self.output_pc1, self.output_pc2, self.output_pc3, self.output_pc4, self.output_pc5, self.output_pc6,
-                    self.output_attack1, self.output_attack2, self.output_attack3, self.output_attack4, self.output_attack5, self.output_attack6, self.output_attack7, self.output_attack8]
+                self.outputs_fine_grained = [self.output_pc1, self.output_pc2, self.output_pc3, self.output_pc4,
+                                             self.output_pc5, self.output_pc6,
+                                             self.output_attack1, self.output_attack2, self.output_attack3,
+                                             self.output_attack4, self.output_attack5, self.output_attack6,
+                                             self.output_attack7, self.output_attack8]
                 self.output_super = nn.Linear(15, 1)
 
         self.cross_entropy_loss = torch.nn.BCEWithLogitsLoss(reduction='mean')
@@ -198,24 +266,31 @@ class CLIPClassifier(pl.LightningModule):
             image_features = self.image_encoder(pixel_values=batch['pixel_values'][0]).pooler_output
             image_features = self.image_map(image_features)
         elif self.text_encoder_name == 'clip':
-            image_features = self.text_encoder(input_ids=batch['input_ids_caption'], attention_mask=batch['attention_mask_caption']).pooler_output
+            image_features = self.text_encoder(input_ids=batch['input_ids_caption'],
+                                               attention_mask=batch['attention_mask_caption']).pooler_output
             image_features = self.text_map(image_features)
         else:
-            text_features = self.text_encoder(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])["hidden_states"][-1][:, 0, :]
+            text_feats = \
+            self.text_encoder(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])["hidden_states"][
+                -1][:, 0, :]
             image_features = self.text_map(image_features)
 
         if self.text_encoder_name == 'clip':
-            text_features = self.text_encoder(input_ids=batch['input_ids'], attention_mask=batch['attention_mask']).pooler_output
+            text_features = self.text_encoder(input_ids=batch['input_ids'],
+                                              attention_mask=batch['attention_mask']).pooler_output
         else:
-            text_features = self.text_encoder(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])["hidden_states"][-1][:, 0, :]
+            text_features = \
+            self.text_encoder(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])["hidden_states"][
+                -1][:, 0, :]
         text_features = self.text_map(text_features)
 
         if self.caption_mode.startswith('parallel'):
-            caption_features = self.text_encoder(input_ids=batch['input_ids_caption'], attention_mask=batch['attention_mask_caption']).pooler_output
+            caption_features = self.text_encoder(input_ids=batch['input_ids_caption'],
+                                                 attention_mask=batch['attention_mask_caption']).pooler_output
             caption_features = self.text_map(caption_features)
 
-        image_features = F.normalize(image_features, p=2, dim=1) # [batch_size, d]
-        text_features = F.normalize(text_features, p=2, dim=1) # [batch_size, d]
+        image_features = F.normalize(image_features, p=2, dim=1)  # [batch_size, d]
+        text_features = F.normalize(text_features, p=2, dim=1)  # [batch_size, d]
         if self.caption_mode.startswith('parallel'):
             caption_features = F.normalize(caption_features, p=2, dim=1)
 
@@ -224,14 +299,15 @@ class CLIPClassifier(pl.LightningModule):
         elif self.fusion == 'concat':
             features = torch.cat([image_features, text_features], dim=1)  # [batch_size, 2*d]
         elif self.fusion.startswith('cross'):
-            features = torch.bmm(image_features.unsqueeze(2), text_features.unsqueeze(1)) # [batch_size, d, d]
+            features = torch.bmm(image_features.unsqueeze(2), text_features.unsqueeze(1))  # [batch_size, d, d]
             if self.fusion == 'cross_nd':
                 mask = torch.eye(self.map_dim).repeat(features.shape[0], 1, 1).bool()
-                features[mask] = torch.zeros(features.shape[0]*self.map_dim, device=features.device)
+                features[mask] = torch.zeros(features.shape[0] * self.map_dim, device=features.device)
                 del mask
             features = features.reshape(features.shape[0], -1)  # [batch_size, d*d]
         elif self.fusion == 'align_concat':
-            features = torch.cat([torch.mul(image_features, text_features), image_features, text_features], dim=1)  # [batch_size, 3*d]
+            features = torch.cat([torch.mul(image_features, text_features), image_features, text_features],
+                                 dim=1)  # [batch_size, 3*d]
         elif self.fusion == 'attention_m':
             q1 = F.relu(self.gen_query(image_features))
             k1 = F.relu(self.gen_key(image_features))
@@ -240,14 +316,14 @@ class CLIPClassifier(pl.LightningModule):
             score1 = torch.reshape(torch.bmm(q1.view(-1, 1, 256), k2.view(-1, 256, 1)), (-1, 1))
             score2 = torch.reshape(torch.bmm(q2.view(-1, 1, 256), k1.view(-1, 256, 1)), (-1, 1))
             wt_score1_score2_mat = torch.cat((score1, score2), 1)
-            wt_i1_i2 = self.soft(wt_score1_score2_mat.float()) #prob
-            prob_1 = wt_i1_i2[:,0]
-            prob_2 = wt_i1_i2[:,1]
+            wt_i1_i2 = self.soft(wt_score1_score2_mat.float())  # prob
+            prob_1 = wt_i1_i2[:, 0]
+            prob_2 = wt_i1_i2[:, 1]
             wtd_i1 = image_features * prob_1[:, None]
             wtd_i2 = text_features * prob_2[:, None]
-            features = torch.cat((wtd_i1,wtd_i2), 1) # [batch_size, 2*d]
+            features = torch.cat((wtd_i1, wtd_i2), 1)  # [batch_size, 2*d]
         else:
-                raise ValueError()
+            raise ValueError()
 
         if self.caption_mode.startswith('parallel'):
             if self.fusion in ['align', 'align_shuffle']:
@@ -255,14 +331,16 @@ class CLIPClassifier(pl.LightningModule):
             elif self.fusion == 'concat':
                 features_parallel = torch.cat([caption_features, text_features], dim=1)  # [batch_size, 2*d]
             elif self.fusion.startswith('cross'):
-                features_parallel = torch.bmm(caption_features.unsqueeze(2), text_features.unsqueeze(1)) # [batch_size, d, d]
+                features_parallel = torch.bmm(caption_features.unsqueeze(2),
+                                              text_features.unsqueeze(1))  # [batch_size, d, d]
                 if self.fusion == 'cross_nd':
                     mask = torch.eye(self.map_dim).repeat(features.shape[0], 1, 1).bool()
-                    features[mask] = torch.zeros(features.shape[0]*self.map_dim, device=features.device)
+                    features[mask] = torch.zeros(features.shape[0] * self.map_dim, device=features.device)
                     del mask
                 features_parallel = features_parallel.reshape(features_parallel.shape[0], -1)  # [batch_size, d*d]
             elif self.fusion == 'align_concat':
-                features = torch.cat([torch.mul(image_features, text_features), image_features, text_features], dim=1)  # [batch_size, 3*d]
+                features = torch.cat([torch.mul(image_features, text_features), image_features, text_features],
+                                     dim=1)  # [batch_size, 3*d]
             elif self.fusion == 'attention_m':
                 q1 = F.relu(self.gen_query(image_features))
                 k1 = F.relu(self.gen_key(image_features))
@@ -271,12 +349,12 @@ class CLIPClassifier(pl.LightningModule):
                 score1 = torch.reshape(torch.bmm(q1.view(-1, 1, 256), k2.view(-1, 256, 1)), (-1, 1))
                 score2 = torch.reshape(torch.bmm(q2.view(-1, 1, 256), k1.view(-1, 256, 1)), (-1, 1))
                 wt_score1_score2_mat = torch.cat((score1, score2), 1)
-                wt_i1_i2 = self.soft(wt_score1_score2_mat.float()) #prob
-                prob_1 = wt_i1_i2[:,0]
-                prob_2 = wt_i1_i2[:,1]
+                wt_i1_i2 = self.soft(wt_score1_score2_mat.float())  # prob
+                prob_1 = wt_i1_i2[:, 0]
+                prob_2 = wt_i1_i2[:, 1]
                 wtd_i1 = image_features * prob_1[:, None]
                 wtd_i2 = text_features * prob_2[:, None]
-                features = torch.cat((wtd_i1,wtd_i2), 1) # [batch_size, 2*d]
+                features = torch.cat((wtd_i1, wtd_i2), 1)  # [batch_size, 2*d]
             else:
                 raise ValueError()
 
@@ -296,62 +374,85 @@ class CLIPClassifier(pl.LightningModule):
         return preds
 
     def common_step(self, batch, batch_idx, calling_function='validation'):
+        #  resize()
+
         if self.caption_mode != "replace_image":
             image_features = self.image_encoder(pixel_values=batch['pixel_values'][0]).pooler_output
             image_features = self.image_map(image_features)
-        else:
-            image_features = self.text_encoder(input_ids=batch['input_ids_caption'], attention_mask=batch['attention_mask_caption']).pooler_output
-            image_features = self.text_map(image_features)
-        text_features = self.text_encoder(input_ids=batch['input_ids'], attention_mask=batch['attention_mask']).pooler_output
-        text_features = self.text_map(text_features)
-        if self.caption_mode.startswith('parallel'):
-            caption_features = self.text_encoder(input_ids=batch['input_ids_caption'], attention_mask=batch['attention_mask_caption']).pooler_output
-            caption_features = self.text_map(caption_features)
 
+        else:
+            image_features = self.text_encoder(input_ids=batch['input_ids_caption'],
+                                               attention_mask=batch['attention_mask_caption']).pooler_output
+            image_features = self.text_map(image_features)
+        text_features = self.text_encoder(input_ids=batch['input_ids'],
+                                          attention_mask=batch['attention_mask']).pooler_output
+        text_features = self.text_map(text_features)
+
+        # 引入Pro-Cap特征值
+        if self.args.with_pro_cap:
+            pro_cap_features = self.text_encoder(input_ids=batch['input_ids_pro_cap'],
+                                                 attention_mask=batch['attention_mask_pro_cap']).pooler_output
+            pro_cap_features = self.pro_cap_map(pro_cap_features)
+
+        if self.caption_mode.startswith('parallel'):
+            caption_features = self.text_encoder(input_ids=batch['input_ids_caption'],
+                                                 attention_mask=batch['attention_mask_caption']).pooler_output
+            caption_features = self.text_map(caption_features)
 
         image_features = F.normalize(image_features, p=2, dim=1)
         text_features = F.normalize(text_features, p=2, dim=1)
+        if self.args.with_pro_cap:
+            pro_cap_features = F.normalize(pro_cap_features, p=2, dim=1)
         if self.caption_mode.startswith('parallel'):
             caption_features = F.normalize(caption_features, p=2, dim=1)
         output = {}
 
-        if self.weight_image_loss > 0:
-            features_pre_output = self.pre_output_image(image_features)
-            logits = self.output_image(features_pre_output).squeeze(dim=1) # [batch_size, 1]
-            preds_proxy = torch.sigmoid(logits)
-            preds = (preds_proxy >= 0.5).long()
+        # if self.weight_image_loss > 0:
+        #     features_pre_output = self.pre_output_image(image_features)
+        #     logits = self.output_image(features_pre_output).squeeze(dim=1) # [batch_size, 1]
+        #     preds_proxy = torch.sigmoid(logits)
+        #     preds = (preds_proxy >= 0.5).long()
+        #
+        #     output['image_loss'] = self.cross_entropy_loss(logits, batch['labels'].float())
+        #     output['image_accuracy'] = self.acc(preds, batch['labels'])
+        #     output['image_auroc'] = self.auroc(preds_proxy, batch['labels'])
+        #
+        # if self.weight_text_loss > 0:
+        #     features_pre_output = self.pre_output_text(text_features)
+        #     logits = self.output_text(features_pre_output).squeeze(dim=1) # [batch_size, 1]
+        #     preds_proxy = torch.sigmoid(logits)
+        #     preds = (preds_proxy >= 0.5).long()
+        #
+        #     output['text_loss'] = self.cross_entropy_loss(logits, batch['labels'].float())
+        #     output['text_accuracy'] = self.acc(preds, batch['labels'])
+        #     output['text_auroc'] = self.auroc(preds_proxy, batch['labels'])
 
-            output['image_loss'] = self.cross_entropy_loss(logits, batch['labels'].float())
-            output['image_accuracy'] = self.acc(preds, batch['labels'])
-            output['image_auroc'] = self.auroc(preds_proxy, batch['labels'])
-
-        if self.weight_text_loss > 0:
-            features_pre_output = self.pre_output_text(text_features)
-            logits = self.output_text(features_pre_output).squeeze(dim=1) # [batch_size, 1]
-            preds_proxy = torch.sigmoid(logits)
-            preds = (preds_proxy >= 0.5).long()
-
-            output['text_loss'] = self.cross_entropy_loss(logits, batch['labels'].float())
-            output['text_accuracy'] = self.acc(preds, batch['labels'])
-            output['text_auroc'] = self.auroc(preds_proxy, batch['labels'])
-
+        # Pro-Cap在特征向量级别融合
         if self.fusion in ['align', 'align_shuffle']:
-            features = torch.mul(image_features, text_features)
+            if self.args.with_pro_cap:
+                features = torch.mul(torch.mul(image_features, text_features), pro_cap_features)
+            else:
+                features = torch.mul(image_features, text_features)
         elif self.fusion == 'concat':
-            features = torch.cat([image_features, text_features], dim=1)
+            if self.args.with_pro_cap:
+                features = torch.cat([image_features, text_features, pro_cap_features], dim=1)
+            else:
+                features = torch.cat([image_features, text_features], dim=1)
         elif self.fusion.startswith('cross'):
-            features = torch.bmm(image_features.unsqueeze(2), text_features.unsqueeze(1)) # [16, d, d]
+            features = torch.bmm(image_features.unsqueeze(2), text_features.unsqueeze(1))  # [16, d, d]
             if self.fusion == 'cross_nd':
                 mask = torch.eye(self.map_dim).repeat(features.shape[0], 1, 1).bool()
-                features[mask] = torch.zeros(features.shape[0]*self.map_dim, device=features.device)
+                features[mask] = torch.zeros(features.shape[0] * self.map_dim, device=features.device)
                 del mask
             features = features.reshape(features.shape[0], -1)  # [batch_size, d*d]
         elif self.fusion == 'align_concat':
-            features = torch.cat([torch.mul(image_features, text_features), image_features, text_features], dim=1)  # [batch_size, 3*d]
+            features = torch.cat([torch.mul(image_features, text_features), image_features, text_features],
+                                 dim=1)  # [batch_size, 3*d]
         elif self.fusion.startswith('weighted'):
+            image_feature_w, text_feature_w = self.weight_taining(image_features, text_features)
             # tensor * 列向量，结果是每行乘以列向量对应行的值
-            weighted_image_features = image_features * self.image_feature_w
-            weighted_text_features = text_features * self.text_feature_w
+            weighted_image_features = image_features * image_feature_w
+            weighted_text_features = text_features * text_feature_w
 
             # normalize
             weighted_image_features = F.normalize(weighted_image_features, p=2, dim=1)
@@ -362,7 +463,8 @@ class CLIPClassifier(pl.LightningModule):
             elif self.fusion == 'weighted_concat':
                 features = torch.cat([weighted_image_features, weighted_text_features], dim=1)  # [batch_size, 2*d]
             elif self.fusion.startswith('weighted_cross'):
-                features = torch.bmm(weighted_image_features.unsqueeze(2), weighted_text_features.unsqueeze(1))  # [16, d, d]
+                features = torch.bmm(weighted_image_features.unsqueeze(2),
+                                     weighted_text_features.unsqueeze(1))  # [16, d, d]
                 if self.fusion == 'weighted_cross_nd':
                     mask = torch.eye(self.map_dim).repeat(features.shape[0], 1, 1).bool()
                     features[mask] = torch.zeros(features.shape[0] * self.map_dim, device=features.device)
@@ -379,12 +481,12 @@ class CLIPClassifier(pl.LightningModule):
             score1 = torch.reshape(torch.bmm(q1.view(-1, 1, 256), k2.view(-1, 256, 1)), (-1, 1))
             score2 = torch.reshape(torch.bmm(q2.view(-1, 1, 256), k1.view(-1, 256, 1)), (-1, 1))
             wt_score1_score2_mat = torch.cat((score1, score2), 1)
-            wt_i1_i2 = self.soft(wt_score1_score2_mat.float()) #prob
-            prob_1 = wt_i1_i2[:,0]
-            prob_2 = wt_i1_i2[:,1]
+            wt_i1_i2 = self.soft(wt_score1_score2_mat.float())  # prob
+            prob_1 = wt_i1_i2[:, 0]
+            prob_2 = wt_i1_i2[:, 1]
             wtd_i1 = image_features * prob_1[:, None]
             wtd_i2 = text_features * prob_2[:, None]
-            features = torch.cat((wtd_i1,wtd_i2), 1) # [batch_size, 2*d]
+            features = torch.cat((wtd_i1, wtd_i2), 1)  # [batch_size, 2*d]
         else:
             raise ValueError()
 
@@ -394,14 +496,16 @@ class CLIPClassifier(pl.LightningModule):
             elif self.fusion == 'concat':
                 features_parallel = torch.cat([caption_features, text_features], dim=1)  # [batch_size, 2*d]
             elif self.fusion.startswith('cross'):
-                features_parallel = torch.bmm(caption_features.unsqueeze(2), text_features.unsqueeze(1)) # [batch_size, d, d]
+                features_parallel = torch.bmm(caption_features.unsqueeze(2),
+                                              text_features.unsqueeze(1))  # [batch_size, d, d]
                 if self.fusion == 'cross_nd':
                     mask = torch.eye(self.map_dim).repeat(features.shape[0], 1, 1).bool()
-                    features[mask] = torch.zeros(features.shape[0]*self.map_dim, device=features.device)
+                    features[mask] = torch.zeros(features.shape[0] * self.map_dim, device=features.device)
                     del mask
                 features_parallel = features_parallel.reshape(features_parallel.shape[0], -1)  # [batch_size, d*d]
             elif self.fusion == 'align_concat':
-                features = torch.cat([torch.mul(image_features, text_features), image_features, text_features], dim=1)  # [batch_size, 3*d]
+                features = torch.cat([torch.mul(image_features, text_features), image_features, text_features],
+                                     dim=1)  # [batch_size, 3*d]
             elif self.fusion == 'attention_m':
                 q1 = F.relu(self.gen_query(image_features))
                 k1 = F.relu(self.gen_key(image_features))
@@ -410,12 +514,12 @@ class CLIPClassifier(pl.LightningModule):
                 score1 = torch.reshape(torch.bmm(q1.view(-1, 1, 256), k2.view(-1, 256, 1)), (-1, 1))
                 score2 = torch.reshape(torch.bmm(q2.view(-1, 1, 256), k1.view(-1, 256, 1)), (-1, 1))
                 wt_score1_score2_mat = torch.cat((score1, score2), 1)
-                wt_i1_i2 = self.soft(wt_score1_score2_mat.float()) #prob
-                prob_1 = wt_i1_i2[:,0]
-                prob_2 = wt_i1_i2[:,1]
+                wt_i1_i2 = self.soft(wt_score1_score2_mat.float())  # prob
+                prob_1 = wt_i1_i2[:, 0]
+                prob_2 = wt_i1_i2[:, 1]
                 wtd_i1 = image_features * prob_1[:, None]
                 wtd_i2 = text_features * prob_2[:, None]
-                features = torch.cat((wtd_i1,wtd_i2), 1) # [batch_size, 2*d]
+                features = torch.cat((wtd_i1, wtd_i2), 1)  # [batch_size, 2*d]
             else:
                 raise ValueError()
 
@@ -429,7 +533,7 @@ class CLIPClassifier(pl.LightningModule):
                 raise ValueError()
 
         features_pre_output = self.pre_output(features)
-        logits = self.output(features_pre_output).squeeze(dim=1) # [batch_size, 1(or)n]
+        logits = self.output(features_pre_output).squeeze(dim=1)  # [batch_size, 1(or)n]
         if self.fine_grained_labels and self.dataset in ['original', 'masked', 'inpainted']:
             logits_for_super = [torch.relu(logits)]
         preds_proxy = torch.sigmoid(logits)
@@ -443,34 +547,38 @@ class CLIPClassifier(pl.LightningModule):
             output['recall'] = self.recall(preds, batch['labels'])
             output['f1'] = self.f1(preds, batch['labels'])
 
-        if calling_function == 'training' and self.fine_grained_labels and self.dataset in ['original', 'masked', 'inpainted']:
+        if calling_function == 'training' and self.fine_grained_labels and self.dataset in ['original', 'masked',
+                                                                                            'inpainted']:
             for fine_grained_label, output_fine_grained in zip(self.fine_grained_labels, self.outputs_fine_grained):
                 logits = output_fine_grained(features_pre_output).squeeze(dim=1)
                 logits_for_super.append(torch.relu(logits))
                 preds_proxy = torch.sigmoid(logits)
                 preds = (preds_proxy >= 0.5).long()
-                output[f'{fine_grained_label}_loss'] = self.cross_entropy_loss(logits, batch[fine_grained_label].float()) 
-            logits_for_super = torch.stack(logits_for_super, dim=1) # [batch_size, 15]       
+                output[f'{fine_grained_label}_loss'] = self.cross_entropy_loss(logits,
+                                                                               batch[fine_grained_label].float())
+            logits_for_super = torch.stack(logits_for_super, dim=1)  # [batch_size, 15]
             logits = self.output_super(logits_for_super).squeeze(dim=1)
             preds_proxy = torch.sigmoid(logits)
             preds = (preds_proxy >= 0.5).long()
-            output['super_loss'] = self.cross_entropy_loss(logits, batch['labels'].float()) 
+            output['super_loss'] = self.cross_entropy_loss(logits, batch['labels'].float())
             output['super_accuracy'] = self.acc(preds, batch['labels'])
             output['super_auroc'] = self.auroc(preds_proxy, batch['labels'])
 
-        elif calling_function == 'validation' and self.fine_grained_labels and self.dataset in ['original', 'masked', 'inpainted']:
+        elif calling_function == 'validation' and self.fine_grained_labels and self.dataset in ['original', 'masked',
+                                                                                                'inpainted']:
             for fine_grained_label, output_fine_grained in zip(self.fine_grained_labels, self.outputs_fine_grained):
                 logits = output_fine_grained(features_pre_output).squeeze(dim=1)
                 logits_for_super.append(torch.relu(logits))
                 preds_proxy = torch.sigmoid(logits)
                 preds = (preds_proxy >= 0.5).long()
-                output[f'{fine_grained_label}_loss'] = self.cross_entropy_loss(logits, batch[fine_grained_label].float())
+                output[f'{fine_grained_label}_loss'] = self.cross_entropy_loss(logits,
+                                                                               batch[fine_grained_label].float())
                 output[f'{fine_grained_label}_accuracy'] = self.acc(preds, batch[fine_grained_label])
                 output[f'{fine_grained_label}_auroc'] = self.auroc(preds_proxy, batch[fine_grained_label])
                 output[f'{fine_grained_label}_precision'] = self.precision_score(preds, batch[fine_grained_label])
                 output[f'{fine_grained_label}_recall'] = self.recall(preds, batch[fine_grained_label])
                 output[f'{fine_grained_label}_f1'] = self.f1(preds, batch[fine_grained_label])
-            logits_for_super = torch.stack(logits_for_super, dim=1) # [batch_size, 15]       
+            logits_for_super = torch.stack(logits_for_super, dim=1)  # [batch_size, 15]
             logits = self.output_super(logits_for_super).squeeze(dim=1)
             preds_proxy = torch.sigmoid(logits)
             preds = (preds_proxy >= 0.5).long()
@@ -488,7 +596,7 @@ class CLIPClassifier(pl.LightningModule):
             return features
 
         return output
-        
+
     def training_step(self, batch, batch_idx):
         output = self.common_step(batch, batch_idx, calling_function='training')
 
@@ -496,13 +604,13 @@ class CLIPClassifier(pl.LightningModule):
             image_loss = output['image_loss']
         else:
             image_loss = 0
-        
+
         if self.weight_text_loss > 0:
             text_loss = output['text_loss']
         else:
             text_loss = 0
 
-        if self.fine_grained_labels  and self.dataset in ['original', 'masked', 'inpainted']:
+        if self.fine_grained_labels and self.dataset in ['original', 'masked', 'inpainted']:
             fine_grained_loss = 0
             for fine_grained_label in self.fine_grained_labels:
                 fine_grained_loss += output[f'{fine_grained_label}_loss']
@@ -512,7 +620,9 @@ class CLIPClassifier(pl.LightningModule):
             fine_grained_loss = 0.0
             super_loss = 0.0
 
-        total_loss = output['loss'] + self.weight_image_loss * image_loss + self.weight_text_loss * text_loss + self.weight_fine_grained_loss * fine_grained_loss + self.weight_super_loss * super_loss
+        # TODO: 设计损失函数，合理化反向传播
+        total_loss = (output['loss'] + self.weight_image_loss * image_loss + self.weight_text_loss * text_loss +
+                      self.weight_fine_grained_loss * fine_grained_loss + self.weight_super_loss * super_loss)
 
         self.log('train/total_loss', total_loss)
         self.log('train/loss', output['loss'])
@@ -530,7 +640,7 @@ class CLIPClassifier(pl.LightningModule):
         if self.fine_grained_labels and self.dataset in ['original', 'masked', 'inpainted']:
             self.log('train/fine_grained_loss', fine_grained_loss)
             self.log('train/super_loss', super_loss)
-        
+
         return total_loss
 
     def validation_step(self, batch, batch_idx):
@@ -540,21 +650,24 @@ class CLIPClassifier(pl.LightningModule):
             image_loss = output['image_loss']
         else:
             image_loss = 0
-        
+
         if self.weight_text_loss > 0:
             text_loss = output['text_loss']
         else:
             text_loss = 0
-        
-        if self.fine_grained_labels and self.compute_fine_grained_metrics and self.dataset in ['original', 'masked', 'inpainted']:
-            fine_grained_loss = torch.mean(torch.Tensor([output[f'{fine_grained_label}_loss'] for fine_grained_label in self.fine_grained_labels]))
+
+        if self.fine_grained_labels and self.compute_fine_grained_metrics and self.dataset in ['original', 'masked',
+                                                                                               'inpainted']:
+            fine_grained_loss = torch.mean(
+                torch.Tensor([output[f'{fine_grained_label}_loss'] for fine_grained_label in self.fine_grained_labels]))
             super_loss = output['super_loss']
         else:
             fine_grained_loss = 0.0
             super_loss = 0.0
 
-        total_loss = output['loss'] + self.weight_image_loss * image_loss + self.weight_text_loss * text_loss + self.weight_fine_grained_loss * fine_grained_loss + self.weight_super_loss * super_loss
-        
+        total_loss = output[
+                         'loss'] + self.weight_image_loss * image_loss + self.weight_text_loss * text_loss + self.weight_fine_grained_loss * fine_grained_loss + self.weight_super_loss * super_loss
+
         self.log(f'val/total_loss', total_loss)
         self.log(f'val/loss', output['loss'])
         self.log(f'val/accuracy', output['accuracy'])
@@ -569,7 +682,8 @@ class CLIPClassifier(pl.LightningModule):
         if self.weight_text_loss > 0:
             self.log(f'val/text_loss', text_loss)
 
-        if self.fine_grained_labels and self.compute_fine_grained_metrics and self.dataset in ['original', 'masked', 'inpainted']:
+        if self.fine_grained_labels and self.compute_fine_grained_metrics and self.dataset in ['original', 'masked',
+                                                                                               'inpainted']:
             self.log(f'val/fine_grained_loss', fine_grained_loss)
             self.log(f'val/super_loss', super_loss)
 
@@ -579,28 +693,28 @@ class CLIPClassifier(pl.LightningModule):
                 self.log(f'val-fine-grained/{fine_grained_label}_precision', output[f'{fine_grained_label}_precision'])
                 self.log(f'val-fine-grained/{fine_grained_label}_recall', output[f'{fine_grained_label}_recall'])
                 self.log(f'val-fine-grained/{fine_grained_label}_f1', output[f'{fine_grained_label}_f1'])
-            
+
             self.log(f'val/super_loss', output['super_loss'])
             self.log(f'val/super_accuracy', output['super_accuracy'])
             self.log(f'val/super_auroc', output['super_auroc'])
-        
+
         return total_loss
 
-    def test_step(self, batch, batch_idx, dataloader_idx):
+    def test_step(self, batch, batch_idx, dataloader_idx=0):
         prefix_map = {
-            0: 'dev_seen',
-            1: 'test_seen',
+            0: 'test_seen',
+            1: 'dev_seen',
             2: 'dev_unseen',
             3: 'test_unseen'
         }
         prefix = prefix_map[dataloader_idx]
         if dataloader_idx == 0:
-            calling_function = 'validation'
-        elif dataloader_idx == 1:
             calling_function = 'training'
-            
+        elif dataloader_idx == 1:
+            calling_function = 'validation'
+
         output = self.common_step(batch, batch_idx, calling_function=calling_function)
-        
+
         self.log(f'{prefix}/accuracy', output['accuracy'])
         self.log(f'{prefix}/auroc', output['auroc'])
         if self.dataset in ['tamil', 'prop']:
@@ -612,15 +726,17 @@ class CLIPClassifier(pl.LightningModule):
             self.log(f'{prefix}/super_accuracy', output['super_accuracy'])
             self.log(f'{prefix}/super_auroc', output['super_auroc'])
 
-            if dataloader_idx  == 0:
+            if dataloader_idx == 1:
                 for fine_grained_label in self.fine_grained_labels:
-                    self.log(f'{prefix}-fine-grained/{fine_grained_label}_accuracy', output[f'{fine_grained_label}_accuracy'])
+                    self.log(f'{prefix}-fine-grained/{fine_grained_label}_accuracy',
+                             output[f'{fine_grained_label}_accuracy'])
                     self.log(f'{prefix}-fine-grained/{fine_grained_label}_auroc', output[f'{fine_grained_label}_auroc'])
-                    self.log(f'{prefix}-fine-grained/{fine_grained_label}_precision', output[f'{fine_grained_label}_precision'])
-                    self.log(f'{prefix}-fine-grained/{fine_grained_label}_recall', output[f'{fine_grained_label}_recall'])
+                    self.log(f'{prefix}-fine-grained/{fine_grained_label}_precision',
+                             output[f'{fine_grained_label}_precision'])
+                    self.log(f'{prefix}-fine-grained/{fine_grained_label}_recall',
+                             output[f'{fine_grained_label}_recall'])
                     self.log(f'{prefix}-fine-grained/{fine_grained_label}_f1', output[f'{fine_grained_label}_f1'])
-                
-        
+
         return output
 
     def training_epoch_end(self, validation_step_outputs):
@@ -647,7 +763,7 @@ class CLIPClassifier(pl.LightningModule):
     def configure_optimizers(self):
         param_dicts = [
             {"params": [p for n, p in self.named_parameters() if p.requires_grad]}
-            ]
+        ]
         optimizer = torch.optim.AdamW(param_dicts, lr=self.lr, weight_decay=self.weight_decay)
 
         return optimizer
@@ -655,6 +771,12 @@ class CLIPClassifier(pl.LightningModule):
 
 def create_model(args, fine_grained_labels):
     compute_fine_grained_metrics = True
-    model = CLIPClassifier(args=args, fine_grained_labels=fine_grained_labels, compute_fine_grained_metrics = compute_fine_grained_metrics)
+    if args.from_checkpoint != 'none':
+        model = CLIPClassifier.load_from_checkpoint(checkpoint_path=args.from_checkpoint,
+                                                    args=args, fine_grained_labels=fine_grained_labels,
+                                                    compute_fine_grained_metrics=compute_fine_grained_metrics)
+    else:
+        model = CLIPClassifier(args=args, fine_grained_labels=fine_grained_labels,
+                               compute_fine_grained_metrics=compute_fine_grained_metrics)
 
     return model
