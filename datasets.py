@@ -18,7 +18,8 @@ class HatefulMemesDataset(Dataset):
         self.image_size = image_size
         # self.info_file = os.path.join(root_folder, 'hateful_memes_expanded.csv')
         self.info_file = os.path.join(root_folder, info_file)
-        self.df = pd.read_csv(self.info_file)
+        self.df = pd.read_csv(self.info_file, encoding='utf-8', na_values=[''], keep_default_na=False)
+        self.df = self.df.fillna('')
         self.df = self.df[self.df['split']==self.split].reset_index(drop=True)
         float_cols = self.df.select_dtypes(float).columns
         self.df[float_cols] = self.df[float_cols].fillna(-1).astype('Int64')
@@ -61,6 +62,11 @@ class HatefulMemesDataset(Dataset):
 
         return item
 
+    # TODO: TEST BEGIN
+    def filter_data(self, idx):
+        filtered_data = self.df[self.df['id'] == idx].reset_index(drop=True)
+        self.df = pd.DataFrame(filtered_data)
+    # TODO: TEST END
 
 class TamilMemesDataset(Dataset):
     def __init__(self, root_folder, split='train', image_size=224):
@@ -148,7 +154,8 @@ class CustomCollator(object):
                     'token_type_ids': 包含 token 的类型 IDs，对于 CLIP 模型来说可能没有实际用途，也是一个 PyTorch Tensor。
             '''
             text_output = self.text_processor([item['text'] for item in batch], padding=True, return_tensors="pt", truncation=True)
-        
+
+
         if self.args.dataset in ['original', 'masked', 'inpainted', 'tamil']:
             caption_output = self.text_processor([item['caption'] for item in batch], padding=True, return_tensors="pt", truncation=True)
             labels = torch.LongTensor([item['label'] for item in batch])
@@ -198,24 +205,37 @@ def load_pkl(path):
 
 
 def load_dataset(args, split):
+    if args.dataset == 'original':
+        if args.mydataset == 'mem':
+            root_folder = 'data/hateful_memes'
+        elif args.mydataset == 'harm':
+            root_folder = 'data/Harm_covide19'
+        elif args.mydataset == 'mimc':
+            root_folder = 'data/misogynous_meme_detection'
 
-    info_file = {
-        True: 'modified_without_val_hateful_memes_expanded.csv',
-        False: 'modified_hateful_memes_expanded.csv'
-    }[args.without_val]
+    if args.mydataset == 'mem':
+        info_file = {
+            True: 'modified_without_val_hateful_memes_expanded.csv',
+            False: 'modified_with_val_hateful_memes_expanded.csv'
+        }[args.without_val]
+    elif args.mydataset == 'harm' or args.mydataset == 'mimc':
+        info_file = 'info.csv'
 
     if args.dataset == 'original':
-        image_folder = 'data/hateful_memes/img'
+        image_folder = os.path.join(root_folder, 'img')
     elif args.dataset == 'masked':
         image_folder = 'data/hateful_memes_masked/'
     elif args.dataset == 'inpainted':
         image_folder = 'data/hateful_memes_inpainted/'
-    
+
     if args.dataset == 'tamil':
         dataset = TamilMemesDataset(root_folder='data/Tamil_troll_memes', split=split, image_size=args.image_size)
     elif args.dataset == 'prop':
         dataset = PropMemesDataset(root_folder='data/propaganda-techniques-in-memes/data/datasets/propaganda/defaults', split=split, image_size=args.image_size)
     else:
-        dataset = HatefulMemesDataset(root_folder='data/hateful_memes', image_folder=image_folder, info_file=info_file,split=split, labels=args.labels, image_size=args.image_size)
-
+        dataset = HatefulMemesDataset(root_folder=root_folder, image_folder=image_folder, info_file=info_file, split=split, labels=args.labels, image_size=args.image_size)
+        # TODO: TEST BEGIN
+        if args.debug != 'none':
+            dataset.filter_data(int(args.debug))
+        # TODO: TEST END
     return dataset

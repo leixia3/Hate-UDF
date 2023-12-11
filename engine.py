@@ -18,59 +18,183 @@ from transformers import CLIPModel, AutoConfig, AutoModel
 
 class CLIPClassifier(pl.LightningModule):
     # 方法
-    def weight_taining(self, image_features, text_features):
-        # TODO: 变更单模态预测方式
-        image_features_pre_output = self.pre_output_image(image_features)
-        image_logits = self.output_image(image_features_pre_output).squeeze(dim=1)  # [batch_size, 1]
-        pred_image_weights = torch.sigmoid(image_logits)  # shape = (batch_size)
-        pred_image_weights = pred_image_weights.unsqueeze(1)  # shape = (batch_size, 1)
-
-        text_features_pre_output = self.pre_output_text(text_features)
-        text_logits = self.output_text(text_features_pre_output).squeeze(dim=1)  # [batch_size, 1]
-        pred_text_weights = torch.sigmoid(text_logits)  # shape = (batch_size)
-        pred_text_weights = pred_text_weights.unsqueeze(1)  # shape = (batch_size, 1)
-
-        # print(f'{pred_image_weights=}')
-        # print(f'{pred_text_weights=}')
+    def weight_training(self, batch, image_features, text_features, pro_cap_features):
+        # 变更单模态预测方式
+        # output = {
+        #     'image': dict(),
+        #     'text': dict(),
+        #     'pro_cap': dict()
+        # }
         #
-        # pred_image_weights=tensor([0.4946, 0.4941, 0.5063, 0.5051, 0.5041, 0.5070, 0.4964, 0.5029, 0.5066,
-        #         0.4921, 0.4919, 0.4998, 0.5074, 0.4930, 0.4808, 0.4933],
-        #        device='cuda:0')
-        # pred_text_weights=tensor([0.4947, 0.4956, 0.4896, 0.4918, 0.4886, 0.5016, 0.4965, 0.4936, 0.4860,
-        #         0.4882, 0.4887, 0.4935, 0.4929, 0.4871, 0.4864, 0.4987],
-        #        device='cuda:0')
+        # image_features_pre_output = self.pre_output_image(image_features)
+        # image_logits = self.output_image(image_features_pre_output).squeeze(dim=1)  # [batch_size, 1]
+        # pred_image_weights = torch.sigmoid(image_logits)
+        # preds_image = (pred_image_weights >= 0.5).long()# shape = (batch_size)
+        # pred_image_weights = pred_image_weights.unsqueeze(1)  # shape = (batch_size, 1)
+        #
+        # output['image']['loss'] = self.cross_entropy_loss(image_logits, batch['labels'].float())
+        # output['image']['accuracy'] = self.acc(preds_image, batch['labels'])
+        # output['image']['auroc'] = self.auroc(pred_image_weights, batch['labels'])
+        #
+        # text_features_pre_output = self.pre_output_text(text_features)
+        # text_logits = self.output_text(text_features_pre_output).squeeze(dim=1)  # [batch_size, 1]
+        # pred_text_weights = torch.sigmoid(text_logits)  # shape = (batch_size)
+        # preds_text = (pred_text_weights >= 0.5).long()
+        # pred_text_weights = pred_text_weights.unsqueeze(1)  # shape = (batch_size, 1)
+        #
+        # output['text']['loss'] = self.cross_entropy_loss(text_logits, batch['labels'].float())
+        # output['text']['accuracy'] = self.acc(preds_text, batch['labels'])
+        # output['text']['auroc'] = self.auroc(pred_text_weights, batch['labels'])
+        #
+        # if pro_cap_features is not None:
+        #     pro_cap_features_pre_output = self.pre_output_pro_cap(pro_cap_features)
+        #     pro_cap_logits = self.output_pro_cap(pro_cap_features_pre_output).squeeze(dim=1)
+        #     pred_pro_cap_weights = torch.sigmoid(pro_cap_logits)
+        #     preds_pro_cap = (pred_pro_cap_weights >= 0.5).long()
+        #     pred_pro_cap_weights = pred_pro_cap_weights.unsqueeze(1) # shape = (batch_size, 1)
+        #
+        #     output['pro_cap']['loss'] = self.cross_entropy_loss(pro_cap_logits, batch['labels'].float())
+        #     output['pro_cap']['accuracy'] = self.acc(preds_pro_cap, batch['labels'])
+        #     output['pro_cap']['auroc'] = self.auroc(pred_pro_cap_weights, batch['labels'])
+        #
+        #     # 归一化
+        #     # 首先拼接
+        #     tmp_tensor = torch.cat((pred_image_weights, pred_text_weights, pred_pro_cap_weights), 1)
+        #     # 然后调用F.softmax函数，按列（一次三个值）做标准化，使得一个batch_size下image_feature_w, text_feature_w和pro_cap_feature_w权重和=1
+        #     softmax_tmp_tensor = F.softmax(tmp_tensor, dim=1)
+        #     # 最后分离新tensor并依次赋值给image_feature_w，text_feature_w和pro_cap_feature_w
+        #     tensor_chunked = torch.chunk(softmax_tmp_tensor.t(), chunks=3, dim=0)
+        #     image_feature_w = tensor_chunked[0].t()
+        #     text_feature_w = tensor_chunked[1].t()
+        #     pro_cap_feature_w = tensor_chunked[2].t()
+        #
+        #     output['image']['weight'] = image_feature_w
+        #     output['text']['weight'] = text_feature_w
+        #     output['pro_cap']['weight'] = pro_cap_feature_w
+        # else:
+        #     # 归一化
+        #     # 首先拼接
+        #     tmp_tensor = torch.cat((pred_image_weights, pred_text_weights), 1)
+        #     # 然后调用F.softmax函数，按列（一次三个值）做标准化，使得一个batch_size下image_feature_w和text_feature_w权重和=1
+        #     softmax_tmp_tensor = F.softmax(tmp_tensor, dim=1)
+        #     # 最后分离新tensor并依次赋值给image_feature_w和text_feature_w
+        #     tensor_chunked = torch.chunk(softmax_tmp_tensor.t(), chunks=2, dim=0)
+        #     image_feature_w = tensor_chunked[0].t()
+        #     text_feature_w = tensor_chunked[1].t()
+        #
+        #     output['image']['weight'] = image_feature_w
+        #     output['text']['weight'] = text_feature_w
+        #
+        # return output
+        # 输出
+        output = {}
 
+        for feature_type, features, pre_output_layer, output_layer in zip(
+                ['image', 'text', 'pro_cap'],
+                [image_features, text_features, pro_cap_features],
+                [self.pre_output_image, self.pre_output_text, self.pre_output_pro_cap],
+                [self.output_image, self.output_text, self.output_pro_cap]
+        ):
+            if features is not None:
+                features_pre_output = pre_output_layer(features)
+                logits = output_layer(features_pre_output).squeeze(dim=1)
+                preds_proxy = torch.sigmoid(logits)
+                preds = (preds_proxy >= 0.5).long()
+                preds_proxy = preds_proxy.unsqueeze(1)
+
+                if self.weight_generator == 'acc':
+                    weight = self.acc(preds, batch['labels']).repeat(len(batch['idx_memes']), 1)
+                elif self.weight_generator == 'direct':
+                    weight = preds_proxy
+                elif self.weight_generator.endswith('fixed'):
+                    # torch.where(condition, True Value Choice, False Value Choice)
+                    # 当满足condition时，选择True Value Choice，否则选择False Value Choice
+                    # 注意这个操作是element-wise的
+                    pre_weight = torch.where(preds_proxy >= 0.5, preds_proxy, 1 - preds_proxy)
+                    if self.weight_generator == 'fixed':
+                        weight = pre_weight
+                    elif self.weight_generator == 'l_after_fixed':
+                        # pre_weight过一层线性层
+                        weight = self.weight_linear(pre_weight)
+                    else:
+                        raise ValueError()
+                else:
+                    raise ValueError()
+                # # torch.where(condition, True Value Choice, False Value Choice)
+                # # 当满足condition时，选择True Value Choice，否则选择False Value Choice
+                # # 注意这个操作是element-wise的
+                # pre_weight = torch.where(preds_proxy >= 0.5, preds_proxy, 1 - preds_proxy)
+                # # pre_weight过一层线性层
+                #
+                # weight = self.weight_linear(pre_weight)
+                output[feature_type] = {
+                    'loss': self.cross_entropy_loss(logits, batch['labels'].float()),
+                    'accuracy': self.acc(preds, batch['labels']),
+                    'auroc': self.auroc(preds_proxy, batch['labels']),
+                    'pure_weight': preds_proxy,
+                    # 'pre_weight': pre_weight,
+                    # 返回一个不会梯度下降的新张量
+                    'weight': weight.detach(),
+                    # 'weight': self.acc(preds, batch['labels']).repeat(len(batch['idx_memes']), 1)
+                }
         # 归一化
-        # 首先拼接
-        tmp_tensor = torch.cat((pred_image_weights, pred_text_weights), 1)
-        # # 然后调用F.softmax函数，按列（一次两个值）做标准化，使得一个batch_size下image_feature_w和text_feature权重和=1
-        softmax_tmp_tensor = F.softmax(tmp_tensor, dim=1)
-        # # 最后分离新tensor并依次赋值给image_feature_w和text_feature_w
-        tensor_chunked = torch.chunk(softmax_tmp_tensor.t(), chunks=2, dim=0)
-        image_feature_w = tensor_chunked[0].t()
-        text_feature_w = tensor_chunked[1].t()
+        # if 'pro_cap' in output:
+        #     tmp_tensor = torch.cat(
+        #         (output['image']['weight'], output['text']['weight'], output['pro_cap']['weight']), 1)
+        # else:
+        #     tmp_tensor = torch.cat((output['image']['weight'], output['text']['weight']), 1)
+        #
+        # softmax_tmp_tensor = F.softmax(tmp_tensor, dim=1)
+        # tensor_chunked = torch.chunk(softmax_tmp_tensor.t(), chunks=len(output), dim=0)
+        #
+        # for feature_type, tensor in zip(output, tensor_chunked):
+        #     output[feature_type]['weight'] = tensor.t()
 
-        # print(f'{image_feature_w=}, {text_feature_w=}')
-        # with open('log_weights.json', 'at') as file:
-        #     file.write(json.dumps({
-        #         'image_feature_w': image_feature_w.squeeze().tolist(),
-        #         'text_feature_w': text_feature_w.squeeze().tolist()
+        # TODO: TEST BEGIN
+        # with open('log_weight.json', 'at') as file:
+        #     file.write(', ' + json.dumps({
+        #         **{
+        #             f'{feature_type}_{estimator}': output[feature_type][estimator].tolist() for estimator in
+        #             ['loss', 'accuracy', 'auroc'] for feature_type in
+        #             (['image', 'text', 'pro_cap'] if 'pro_cap' in output else ['image', 'text'])
+        #         },
+        #         'batch': [{
+        #             'img': batch['idx_memes'].tolist()[idx],
+        #             **{**{
+        #                     f"{feature_type}_weight": output[feature_type]['weight'].tolist()[idx][0] for feature_type in
+        #                     (['image', 'text', 'pro_cap'] if 'pro_cap' in output else ['image', 'text'])
+        #                 },
+        #                **{
+        #                    f"{feature_type}_pure_weight": output[feature_type]['pure_weight'].tolist()[idx][0] for
+        #                    feature_type in (['image', 'text', 'pro_cap'] if 'pro_cap' in output else ['image', 'text'])
+        #                },
+        #             }
+        #         } for idx in range(len(batch['idx_memes']))],
         #     }))
-        return image_feature_w, text_feature_w
+        #
+        # print(f'{output["image"]["weight"].shape=}, {output["image"]["accuracy"]=}')
+        with open('./log_weights_without_pro_cap.jsonl', 'at') as file:
+            file.write('\n'.join([json.dumps(item) for item in [{
+                feature_type: output[feature_type]['weight'].tolist()[i] for feature_type in output.keys()
+            } for i in range(16)]]) + '\n')
+        # TODO: TEST END
+        return output
 
     def __init__(self, args, fine_grained_labels, compute_fine_grained_metrics):
         super().__init__()
-        self.args = args
+        # self.args = args
         self.caption_mode = args.caption_mode
         self.use_pretrained_map = args.use_pretrained_map
         self.num_mapping_layers = args.num_mapping_layers
         self.map_dim = args.map_dim
         self.fusion = args.fusion
+        self.debug = args.debug
+        self.with_pro_cap = args.with_pro_cap
         self.num_pre_output_layers = args.num_pre_output_layers
         self.lr = args.lr
         self.weight_decay = args.weight_decay
-        self.weight_image_loss = args.weight_image_loss
-        self.weight_text_loss = args.weight_text_loss
+        # self.weight_image_loss = args.weight_image_loss
+        # self.weight_text_loss = args.weight_text_loss
         self.weight_fine_grained_loss = args.weight_fine_grained_loss
         self.weight_super_loss = args.weight_super_loss
         self.fine_grained_labels = fine_grained_labels
@@ -108,6 +232,7 @@ class CLIPClassifier(pl.LightningModule):
         else:
             raise ValueError()
         if args.text_encoder == 'clip':
+            # TODO: 看看encoder具体是做什么的
             self.text_encoder = copy.deepcopy(self.clip.text_model)
         elif args.text_encoder:
             config = AutoConfig.from_pretrained(args.text_encoder, output_hidden_states=True)
@@ -126,7 +251,11 @@ class CLIPClassifier(pl.LightningModule):
                 nn.ReLU(),
                 nn.Linear(self.clip.projection_dim, self.map_dim)
             )
-
+            self.pro_cap_map = nn.Sequential(
+                copy.deepcopy(self.clip.text_projection),
+                nn.ReLU(),
+                nn.Linear(self.clip.projection_dim, self.map_dim)
+            )
         else:
             image_map_layers = [nn.Linear(self.image_encoder.config.hidden_size, self.map_dim),
                                 nn.Dropout(p=args.drop_probs[0])]
@@ -134,7 +263,7 @@ class CLIPClassifier(pl.LightningModule):
                                nn.Dropout(p=args.drop_probs[0])]
             # 引入Pro-Cap映射层
             pro_cap_map_layers = [nn.Linear(self.text_encoder.config.hidden_size, self.map_dim),
-                               nn.Dropout(p=args.drop_probs[0])]
+                                  nn.Dropout(p=args.drop_probs[0])]
             for _ in range(1, self.num_mapping_layers):
                 image_map_layers.extend(
                     [nn.ReLU(), nn.Linear(self.map_dim, self.map_dim), nn.Dropout(p=args.drop_probs[0])])
@@ -147,25 +276,26 @@ class CLIPClassifier(pl.LightningModule):
             self.text_map = nn.Sequential(*text_map_layers)
             self.pro_cap_map = nn.Sequential(*pro_cap_map_layers)
 
+        self.weight_linear = nn.Linear(1, 1)
+
         fusion = args.fusion
         # TODO: 目前设计weighted模式下pre_output_input_dim与非weighted下一致，请确认是否正确
         if fusion.startswith('weighted'):
+            self.weight_generator = args.weight_generator
             fusion = fusion.replace('weighted_', '')
-
-        if fusion in ['align', 'align_shuffle']:
-            if self.args.with_pro_cap:
-                pre_output_input_dim = self.map_dim
-            else:
-                pre_output_input_dim = self.map_dim
+        if fusion == 'sum':
+            pre_output_input_dim = self.map_dim
+        elif fusion in ['align', 'align_shuffle']:
+            pre_output_input_dim = self.map_dim
         elif fusion == 'concat':
-            if self.args.with_pro_cap:
+            if self.with_pro_cap:
                 pre_output_input_dim = self.map_dim * 3
             else:
                 pre_output_input_dim = self.map_dim * 2
         elif fusion.startswith('cross'):
             pre_output_input_dim = self.map_dim ** 2
         elif fusion == 'align_concat':
-            pre_output_input_dim = self.map_dim * 3
+            pre_output_input_dim = self.map_dim * (4 if self.with_pro_cap else 3)
         elif fusion == 'attention_m':
             self.gen_query = nn.Linear(self.map_dim, self.map_dim // 4)
             self.gen_key = nn.Linear(self.map_dim, self.map_dim // 4)
@@ -191,19 +321,25 @@ class CLIPClassifier(pl.LightningModule):
 
         image_pre_output_layers = [nn.Dropout(p=args.drop_probs[1])]
         text_pre_output_layers = [nn.Dropout(p=args.drop_probs[1])]
+        pro_cap_pre_output_layers = [nn.Dropout(p=args.drop_probs[1])]
         for _ in range(self.num_pre_output_layers):  # next pre-output layers
             image_pre_output_layers.extend(
                 [nn.Linear(self.map_dim, self.map_dim), nn.ReLU(), nn.Dropout(p=args.drop_probs[2])])
             text_pre_output_layers.extend(
                 [nn.Linear(self.map_dim, self.map_dim), nn.ReLU(), nn.Dropout(p=args.drop_probs[2])])
+            pro_cap_pre_output_layers.extend(
+                [nn.Linear(self.map_dim, self.map_dim), nn.ReLU(), nn.Dropout(p=args.drop_probs[2])])
         self.pre_output_image = nn.Sequential(*image_pre_output_layers)
         self.pre_output_text = nn.Sequential(*text_pre_output_layers)
+        self.pre_output_pro_cap = nn.Sequential(*pro_cap_pre_output_layers)
         if self.dataset in ['original', 'masked', 'inpainted', 'tamil']:
             self.output_image = nn.Linear(output_input_dim, 1)
             self.output_text = nn.Linear(output_input_dim, 1)
+            self.output_pro_cap = nn.Linear(output_input_dim, 1)
         elif self.dataset == 'prop':
             self.output_image = nn.Linear(output_input_dim, 22)
             self.output_text = nn.Linear(output_input_dim, 22)
+            self.output_pro_cap = nn.Linear(output_input_dim, 1)
 
         # if self.weight_image_loss > 0:
         #     pre_output_layers = [nn.Dropout(p=args.drop_probs[1])]
@@ -271,8 +407,9 @@ class CLIPClassifier(pl.LightningModule):
             image_features = self.text_map(image_features)
         else:
             text_feats = \
-            self.text_encoder(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])["hidden_states"][
-                -1][:, 0, :]
+                self.text_encoder(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])[
+                    "hidden_states"][
+                    -1][:, 0, :]
             image_features = self.text_map(image_features)
 
         if self.text_encoder_name == 'clip':
@@ -280,8 +417,9 @@ class CLIPClassifier(pl.LightningModule):
                                               attention_mask=batch['attention_mask']).pooler_output
         else:
             text_features = \
-            self.text_encoder(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])["hidden_states"][
-                -1][:, 0, :]
+                self.text_encoder(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])[
+                    "hidden_states"][
+                    -1][:, 0, :]
         text_features = self.text_map(text_features)
 
         if self.caption_mode.startswith('parallel'):
@@ -389,7 +527,7 @@ class CLIPClassifier(pl.LightningModule):
         text_features = self.text_map(text_features)
 
         # 引入Pro-Cap特征值
-        if self.args.with_pro_cap:
+        if self.with_pro_cap:
             pro_cap_features = self.text_encoder(input_ids=batch['input_ids_pro_cap'],
                                                  attention_mask=batch['attention_mask_pro_cap']).pooler_output
             pro_cap_features = self.pro_cap_map(pro_cap_features)
@@ -401,7 +539,7 @@ class CLIPClassifier(pl.LightningModule):
 
         image_features = F.normalize(image_features, p=2, dim=1)
         text_features = F.normalize(text_features, p=2, dim=1)
-        if self.args.with_pro_cap:
+        if self.with_pro_cap:
             pro_cap_features = F.normalize(pro_cap_features, p=2, dim=1)
         if self.caption_mode.startswith('parallel'):
             caption_features = F.normalize(caption_features, p=2, dim=1)
@@ -428,13 +566,18 @@ class CLIPClassifier(pl.LightningModule):
         #     output['text_auroc'] = self.auroc(preds_proxy, batch['labels'])
 
         # Pro-Cap在特征向量级别融合
-        if self.fusion in ['align', 'align_shuffle']:
-            if self.args.with_pro_cap:
+        if self.fusion == 'sum':
+            if self.with_pro_cap:
+                features = image_features + text_features + pro_cap_features
+            else:
+                features = image_features + text_features
+        elif self.fusion in ['align', 'align_shuffle']:
+            if self.with_pro_cap:
                 features = torch.mul(torch.mul(image_features, text_features), pro_cap_features)
             else:
                 features = torch.mul(image_features, text_features)
         elif self.fusion == 'concat':
-            if self.args.with_pro_cap:
+            if self.with_pro_cap:
                 features = torch.cat([image_features, text_features, pro_cap_features], dim=1)
             else:
                 features = torch.cat([image_features, text_features], dim=1)
@@ -446,32 +589,98 @@ class CLIPClassifier(pl.LightningModule):
                 del mask
             features = features.reshape(features.shape[0], -1)  # [batch_size, d*d]
         elif self.fusion == 'align_concat':
-            features = torch.cat([torch.mul(image_features, text_features), image_features, text_features],
-                                 dim=1)  # [batch_size, 3*d]
+            if self.with_pro_cap:
+                features = torch.cat([torch.mul(torch.mul(image_features, text_features), pro_cap_features), image_features, text_features, pro_cap_features], dim=1)
+            else:
+                features = torch.cat([torch.mul(image_features, text_features), image_features, text_features],
+                                     dim=1)  # [batch_size, 3*d]
         elif self.fusion.startswith('weighted'):
-            image_feature_w, text_feature_w = self.weight_taining(image_features, text_features)
-            # tensor * 列向量，结果是每行乘以列向量对应行的值
-            weighted_image_features = image_features * image_feature_w
-            weighted_text_features = text_features * text_feature_w
-
-            # normalize
-            weighted_image_features = F.normalize(weighted_image_features, p=2, dim=1)
-            weighted_text_features = F.normalize(weighted_text_features, p=2, dim=1)
-
-            if self.fusion in ['weighted_align', 'weighted_align_shuffle']:
-                features = torch.mul(weighted_image_features, weighted_text_features)  # [batch_size, d]
+            # Simplified code
+            weights_and_estimate = self.weight_training(batch, image_features, text_features,
+                                                        pro_cap_features if self.with_pro_cap else None)
+            weighted_features = ([features * weights_and_estimate[feature_type]['weight'] for feature_type, features in
+                                  zip(['image', 'text'], [image_features, text_features])]
+                                 + [pro_cap_features * weights_and_estimate['pro_cap'][
+                        'weight'] if self.with_pro_cap else None])
+            weighted_features = [feature for feature in weighted_features if feature is not None]
+            # 标准化后的特征向量，len(normalized_features) = 2 or 3，取决于有无Pro-Cap
+            normalized_features = [F.normalize(feature, p=2, dim=1) for feature in weighted_features if
+                                   feature is not None]
+            if self.fusion == 'weighted_sum':
+                features = sum(normalized_features)
+            elif self.fusion in ['weighted_align', 'weighted_align_shuffle']:
+                features = torch.prod(torch.stack(normalized_features), dim=0)
+            elif self.fusion == 'weighted_align_concat':
+                features = torch.cat([torch.prod(torch.stack(normalized_features), dim=0), *normalized_features], dim=1)
             elif self.fusion == 'weighted_concat':
-                features = torch.cat([weighted_image_features, weighted_text_features], dim=1)  # [batch_size, 2*d]
-            elif self.fusion.startswith('weighted_cross'):
-                features = torch.bmm(weighted_image_features.unsqueeze(2),
-                                     weighted_text_features.unsqueeze(1))  # [16, d, d]
-                if self.fusion == 'weighted_cross_nd':
-                    mask = torch.eye(self.map_dim).repeat(features.shape[0], 1, 1).bool()
-                    features[mask] = torch.zeros(features.shape[0] * self.map_dim, device=features.device)
-                    del mask
-                features = features.reshape(features.shape[0], -1)  # [batch_size, d*d]
+                features = torch.cat(normalized_features, dim=1)
+            # # 这里只融合了两个向量
+            # elif self.fusion.startswith('weighted_cross'):
+            #     features = torch.bmm(normalized_features[0].unsqueeze(2), normalized_features[1].unsqueeze(1))
+            #     if self.fusion == 'weighted_cross_nd':
+            #         mask = torch.eye(self.map_dim).repeat(features.shape[0], 1, 1).bool()
+            #         features[mask] = torch.zeros(features.shape[0] * self.map_dim, device=features.device)
+            #     features = features.reshape(features.shape[0], -1)
             else:
                 raise ValueError()
+
+            # weights_and_estimate = self.weight_taining(batch, image_features, text_features,
+            #                                            pro_cap_features if self.with_pro_cap else None)
+            #
+            # weighted_features = ([features * weight
+            #                       for features, weight in zip([image_features, text_features],
+            #                                                   [
+            #                                                       weights_and_estimate[feature_type]['weight']
+            #                                                       for feature_type in ['image', 'text']
+            #                                                   ])
+            #                       ]
+            #                      + [pro_cap_features * weights_and_estimate['pro_cap'][
+            #             'weight'] if self.with_pro_cap else None])
+            #
+            # normalized_features = [F.normalize(feature, p=2, dim=1) for feature in weighted_features if
+            #                        feature is not None]
+
+            # # TODO: TEST BEGIN
+            # if self.debug != 'none':
+            #     image_feature_w = image_feature_w.tolist()
+            #     text_feature_w = text_feature_w.tolist()
+            #     print(f'{self.debug=}\n{image_feature_w=}\n{text_feature_w=}')
+            #     with open('log_pointed_meme_weights.json', 'at') as file:
+            #         file.write(json.dumps({
+            #             'img': self.debug,
+            #             'image_feature_w': image_feature_w,
+            #             'text_feature_w': text_feature_w
+            #         }))
+            #     exit()
+            # # TODO: TEST END
+
+            # if self.fusion in ['weighted_align', 'weighted_align_shuffle']:
+            #     # [batch_size, d]
+            #     if self.with_pro_cap:
+            #         features = torch.mul(torch.mul(weighted_image_features, weighted_text_features),
+            #                              weighted_pro_cap_features)
+            #     else:
+            #         features = torch.mul(weighted_image_features, weighted_text_features)
+            # elif self.fusion == 'weighted_concat':
+            #     # [batch_size, 2*d]
+            #     if self.with_pro_cap:
+            #         features = torch.cat([weighted_image_features, weighted_text_features, weighted_pro_cap_features],
+            #                              dim=1)
+            #     else:
+            #         features = torch.cat([weighted_image_features, weighted_text_features], dim=1)
+            # # 引入三模态Cross融合机制
+            # elif self.fusion.startswith('weighted_cross'):
+            #     features = torch.bmm(weighted_image_features.unsqueeze(2),
+            #                          weighted_text_features.unsqueeze(1))  # [16, d, d]
+            #     if self.fusion == 'weighted_cross_nd':
+            #         mask = torch.eye(self.map_dim).repeat(features.shape[0], 1, 1).bool()
+            #         features[mask] = torch.zeros(features.shape[0] * self.map_dim, device=features.device)
+            #         del mask
+            #     features = features.reshape(features.shape[0], -1)  # [batch_size, d*d]
+            # else:
+            #     raise ValueError()
+
+
 
         elif self.fusion == 'attention_m':
             q1 = F.relu(self.gen_query(image_features))
@@ -538,10 +747,22 @@ class CLIPClassifier(pl.LightningModule):
             logits_for_super = [torch.relu(logits)]
         preds_proxy = torch.sigmoid(logits)
         preds = (preds_proxy >= 0.5).long()
-
         output['loss'] = self.cross_entropy_loss(logits, batch['labels'].float())
         output['accuracy'] = self.acc(preds, batch['labels'])
         output['auroc'] = self.auroc(preds_proxy, batch['labels'])
+        if self.fusion.startswith('weighted'):
+            output['image_loss'] = weights_and_estimate['image']['loss']
+            output['image_accuracy'] = weights_and_estimate['image']['accuracy']
+            output['image_auroc'] = weights_and_estimate['image']['auroc']
+
+            output['text_loss'] = weights_and_estimate['text']['loss']
+            output['text_accuracy'] = weights_and_estimate['text']['accuracy']
+            output['text_auroc'] = weights_and_estimate['text']['auroc']
+            if self.with_pro_cap:
+                output['pro_cap_loss'] = weights_and_estimate['pro_cap']['loss']
+                output['pro_cap_accuracy'] = weights_and_estimate['pro_cap']['accuracy']
+                output['pro_cap_auroc'] = weights_and_estimate['pro_cap']['auroc']
+
         if self.dataset in ['tamil', 'prop']:
             output['precision'] = self.precision_score(preds, batch['labels'])
             output['recall'] = self.recall(preds, batch['labels'])
@@ -599,16 +820,15 @@ class CLIPClassifier(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         output = self.common_step(batch, batch_idx, calling_function='training')
-
-        if self.weight_image_loss > 0:
-            image_loss = output['image_loss']
-        else:
-            image_loss = 0
-
-        if self.weight_text_loss > 0:
-            text_loss = output['text_loss']
-        else:
-            text_loss = 0
+        # if self.weight_image_loss > 0:
+        #     image_loss = output['image_loss']
+        # else:
+        #     image_loss = 0
+        #
+        # if self.weight_text_loss > 0:
+        #     text_loss = output['text_loss']
+        # else:
+        #     text_loss = 0
 
         if self.fine_grained_labels and self.dataset in ['original', 'masked', 'inpainted']:
             fine_grained_loss = 0
@@ -620,9 +840,19 @@ class CLIPClassifier(pl.LightningModule):
             fine_grained_loss = 0.0
             super_loss = 0.0
 
-        # TODO: 设计损失函数，合理化反向传播
-        total_loss = (output['loss'] + self.weight_image_loss * image_loss + self.weight_text_loss * text_loss +
-                      self.weight_fine_grained_loss * fine_grained_loss + self.weight_super_loss * super_loss)
+
+        # 加入单模态的损失函数，忽略正则化项
+        loss_items = [output[item] for item in output.keys() if item.endswith('loss')]
+        total_loss = sum(loss_items) / len(loss_items)
+
+        # total_loss = (output['loss'] + output['image_loss'] + output['text_loss'] + (output['pro_cap_loss'] if self.with_pro_cap else 0)) / (4 if self.with_pro_cap else 3)
+
+        # total_loss = (output['loss'] + self.weight_image_loss * image_loss + self.weight_text_loss * text_loss +
+        #               self.weight_fine_grained_loss * fine_grained_loss + self.weight_super_loss * super_loss)
+
+        # total_loss = (output['loss'] + output['image_loss'] + output['text_loss']
+        #               + output['pro_cap_loss'] if self.with_pro_cap else 0
+        #               + self.weight_fine_grained_loss * fine_grained_loss + self.weight_super_loss * super_loss)
 
         self.log('train/total_loss', total_loss)
         self.log('train/loss', output['loss'])
@@ -633,10 +863,23 @@ class CLIPClassifier(pl.LightningModule):
             self.log('train/recall', output['recall'])
             self.log('train/f1', output['f1'])
 
-        if self.weight_image_loss > 0:
-            self.log('train/image_loss', image_loss)
-        if self.weight_text_loss > 0:
-            self.log('train/text_loss', text_loss)
+        if self.fusion.startswith('weighted'):
+            self.log('train/image_loss', output['image_loss'])
+            self.log('train/image_accuracy', output['image_accuracy'])
+            self.log('train/image_auroc', output['image_auroc'])
+
+            self.log('train/text_loss', output['text_loss'])
+            self.log('train/text_accuracy', output['text_accuracy'])
+            self.log('train/text_auroc', output['text_auroc'])
+            if self.with_pro_cap:
+                self.log('train/pro_cap_loss', output['pro_cap_loss'])
+                self.log('train/pro_cap_accuracy', output['pro_cap_accuracy'])
+                self.log('train/pro_cap_auroc', output['pro_cap_auroc'])
+
+        # if self.weight_image_loss > 0:
+        #     self.log('train/image_loss', image_loss)
+        # if self.weight_text_loss > 0:
+        #     self.log('train/text_loss', text_loss)
         if self.fine_grained_labels and self.dataset in ['original', 'masked', 'inpainted']:
             self.log('train/fine_grained_loss', fine_grained_loss)
             self.log('train/super_loss', super_loss)
@@ -646,15 +889,15 @@ class CLIPClassifier(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         output = self.common_step(batch, batch_idx, calling_function='validation')
 
-        if self.weight_image_loss > 0:
-            image_loss = output['image_loss']
-        else:
-            image_loss = 0
-
-        if self.weight_text_loss > 0:
-            text_loss = output['text_loss']
-        else:
-            text_loss = 0
+        # if self.weight_image_loss > 0:
+        #     image_loss = output['image_loss']
+        # else:
+        #     image_loss = 0
+        #
+        # if self.weight_text_loss > 0:
+        #     text_loss = output['text_loss']
+        # else:
+        #     text_loss = 0
 
         if self.fine_grained_labels and self.compute_fine_grained_metrics and self.dataset in ['original', 'masked',
                                                                                                'inpainted']:
@@ -665,9 +908,19 @@ class CLIPClassifier(pl.LightningModule):
             fine_grained_loss = 0.0
             super_loss = 0.0
 
-        total_loss = output[
-                         'loss'] + self.weight_image_loss * image_loss + self.weight_text_loss * text_loss + self.weight_fine_grained_loss * fine_grained_loss + self.weight_super_loss * super_loss
+            # 加入单模态的损失函数，忽略正则化项
+            loss_items = [output[item] for item in output.keys() if item.endswith('loss')]
+            total_loss = sum(loss_items) / len(loss_items)
 
+            # total_loss = (output['loss'] + output['image_loss'] + output['text_loss']
+            #               + output['pro_cap_loss'] if self.with_pro_cap else 0) / (4 if self.with_pro_cap else 3)
+
+            # total_loss = (output['loss'] + self.weight_image_loss * image_loss + self.weight_text_loss * text_loss +
+            #               self.weight_fine_grained_loss * fine_grained_loss + self.weight_super_loss * super_loss)
+
+            # total_loss = (output['loss'] + output['image_loss'] + output['text_loss']
+            #               + output['pro_cap_loss'] if self.with_pro_cap else 0
+            #               + self.weight_fine_grained_loss * fine_grained_loss + self.weight_super_loss * super_loss)
         self.log(f'val/total_loss', total_loss)
         self.log(f'val/loss', output['loss'])
         self.log(f'val/accuracy', output['accuracy'])
@@ -677,10 +930,23 @@ class CLIPClassifier(pl.LightningModule):
             self.log('val/recall', output['recall'])
             self.log('val/f1', output['f1'])
 
-        if self.weight_image_loss > 0:
-            self.log(f'val/image_loss', image_loss)
-        if self.weight_text_loss > 0:
-            self.log(f'val/text_loss', text_loss)
+        if self.fusion.startswith('weighted'):
+            self.log('train/image_loss', output['image_loss'])
+            self.log('train/image_accuracy', output['image_accuracy'])
+            self.log('train/image_auroc', output['image_auroc'])
+
+            self.log('train/text_loss', output['text_loss'])
+            self.log('train/text_accuracy', output['text_accuracy'])
+            self.log('train/text_auroc', output['text_auroc'])
+            if self.with_pro_cap:
+                self.log('train/pro_cap_loss', output['pro_cap_loss'])
+                self.log('train/pro_cap_accuracy', output['pro_cap_accuracy'])
+                self.log('train/pro_cap_auroc', output['pro_cap_auroc'])
+
+        # if self.weight_image_loss > 0:
+        #     self.log(f'val/image_loss', image_loss)
+        # if self.weight_text_loss > 0:
+        #     self.log(f'val/text_loss', text_loss)
 
         if self.fine_grained_labels and self.compute_fine_grained_metrics and self.dataset in ['original', 'masked',
                                                                                                'inpainted']:
