@@ -1,5 +1,5 @@
 import argparse
-import datetime
+from datetime import datetime
 import os
 import torch
 import wandb
@@ -33,6 +33,7 @@ def get_arg_parser():
     parser = argparse.ArgumentParser(description='Traning and evaluation script for hateful meme classification')
 
     # dataset parameters
+    parser.add_argument('--mydataset', default='mem', choices=['mem', 'harm', 'mimc'])
     parser.add_argument('--dataset', default='original', choices=['original', 'masked', 'inpainted', 'tamil', 'prop'])
     parser.add_argument('--labels', default='original', choices=['original', 'fine_grained', 'fine_grained_gold'])
     parser.add_argument('--image_size', type=int, default=224)
@@ -45,7 +46,7 @@ def get_arg_parser():
     parser.add_argument('--use_pretrained_map', default=False, type=str2bool)
     parser.add_argument('--num_mapping_layers', default=1, type=int)
     parser.add_argument('--map_dim', default=768, type=int)
-    parser.add_argument('--fusion', default='clip', choices=['align', 'align_shuffle', 'concat', 'cross', 'cross_nd', 'align_concat', 'weighted_align', 'weighted_align_shuffle', 'weighted_concat', 'weighted_cross', 'weighted_cross_nd', 'attention_m'])
+    parser.add_argument('--fusion', default='clip', choices=['sum', 'align', 'align_shuffle', 'concat', 'cross', 'cross_nd', 'align_concat', 'weighted_sum', 'weighted_align', 'weighted_align_shuffle', 'weighted_concat', 'weighted_align_concat', 'attention_m'])
     parser.add_argument('--num_pre_output_layers', default=1, type=int)
     parser.add_argument('--drop_probs', type=float, nargs=3, default=[0.1, 0.4, 0.2], help="Set drop probabilities for map, fusion, pre_output")
     parser.add_argument('--image_encoder', type=str, default='clip')
@@ -53,9 +54,14 @@ def get_arg_parser():
     parser.add_argument('--freeze_image_encoder', type=str2bool, default=True)
     parser.add_argument('--freeze_text_encoder', type=str2bool, default=True)
     parser.add_argument('--from_checkpoint', type=str, default='none')
+    # TODO: TEST BEGIN
+    parser.add_argument('--debug', type=str, default='none')
+    # TODO: TEST END
+    parser.add_argument('--weight_generator', type=str, default='l_after_fixed', choices=['acc', 'direct', 'fixed', 'l_after_fixed'])
     parser.add_argument('--with_pro_cap', action='store_true', default=False, help='Using Pro-Cap')
     parser.add_argument('--without_val', action='store_true', default=False, help='Without validation')
     parser.add_argument('--test_only', action='store_true', default=False, help='Test only and point out the checkpoint filename')
+
     # training parameters
     parser.add_argument('--remove_matches', type=str2bool, default=False)
     parser.add_argument('--gpus', default='0', help='GPU ids concatenated with space')
@@ -68,8 +74,8 @@ def get_arg_parser():
     parser.add_argument('--val_check_interval', default=1.0)
     parser.add_argument('--batch_size', type=int, default=16, help='Batch size')
     parser.add_argument('--lr', type=float, default=1e-4)
-    parser.add_argument('--weight_image_loss', type=float, default=1.0)
-    parser.add_argument('--weight_text_loss', type=float, default=1.0)
+    # parser.add_argument('--weight_image_loss', type=float, default=1.0)
+    # parser.add_argument('--weight_text_loss', type=float, default=1.0)
     parser.add_argument('--weight_fine_grained_loss', type=float, default=1.0)
     parser.add_argument('--weight_super_loss', type=float, default=1.0)
     parser.add_argument('--weight_decay', type=float, default=1e-4)
@@ -146,15 +152,15 @@ def main(args):
         project="meme-tamil-v2"
     else:
         if not args.without_val:
-            monitor="val/f1"
+            monitor="val/auroc"
         else:
-            monitor="train/auroc"
+            monitor="train/total_loss"
         project="meme-v2"
 
     wandb_logger = WandbLogger(project=project, config=args)
     num_params = {f'param_{n}':p.numel() for n, p in model.named_parameters() if p.requires_grad}
     wandb_logger.experiment.config.update(num_params)
-    checkpoint_callback = ModelCheckpoint(dirpath='checkpoints', filename='-{epoch:02d}',  monitor=monitor, mode='max', verbose=True, save_weights_only=True, save_top_k=1, save_last=False)
+    checkpoint_callback = ModelCheckpoint(dirpath='checkpoints', filename=datetime.now().strftime('%Y%m%d%H%M')+'-{epoch:02d}',  monitor=monitor, mode='max', verbose=True, save_weights_only=True, save_top_k=1, save_last=False)
 
     trainer = Trainer(max_epochs=args.max_epochs, max_steps=args.max_steps,
                       gradient_clip_val=args.gradient_clip_val,
