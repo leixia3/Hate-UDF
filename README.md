@@ -1,6 +1,6 @@
 # Hate-UDF: Explainable Hateful Meme Detection with Uncertainty-aware Dynamic Fusion
 
-This project is part of the paper [Hate-UDF: Explainable Hateful Meme Detection with Uncertainty-aware Dynamic Fusion]().
+This project is part of the paper [Hate-UDF: Explainable Hateful Meme Detection with Uncertainty-aware Dynamic Fusion](https://doi.org/10.1002/spe.3403).
 
 ## Install
 
